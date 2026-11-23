@@ -1,0 +1,200 @@
+<mujoco model="nero_desk_scene">
+  <!-- 桌面场景：AgileX NERO 七自由度机械臂 + 桌面三个彩色方块
+       由 build_nero.py 生成；机械臂基座固定在桌面上表面 (z=0.74) -->
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002" integrator="implicitfast" cone="elliptic" impratio="10"
+          gravity="0 0 -9.81"/>
+
+  <visual>
+    <global offwidth="1280" offheight="720" fovy="42"/>
+    <headlight ambient="0.26 0.27 0.30" diffuse="0.30 0.30 0.31" specular="0.06 0.06 0.06"/>
+    <map znear="0.01" zfar="30"/>
+    <quality shadowsize="4096"/>
+    <rgba haze="0.20 0.22 0.25 1"/>
+  </visual>
+
+  <asset>
+    <texture name="sky" type="skybox" builtin="gradient"
+             rgb1="0.34 0.38 0.44" rgb2="0.05 0.06 0.08" width="512" height="512"/>
+    <texture name="floor_grid" type="2d" builtin="checker"
+             rgb1="0.28 0.30 0.33" rgb2="0.22 0.24 0.27" width="512" height="512"/>
+    <material name="floor_mat" texture="floor_grid" texrepeat="8 8" reflectance="0.03"/>
+    <material name="wood"      rgba="0.66 0.46 0.30 1" specular="0.25" shininess="0.25" reflectance="0.02"/>
+    <material name="leg_mat"   rgba="0.30 0.33 0.38 1" specular="0.4" shininess="0.5"/>
+    <material name="mat_red"   rgba="0.86 0.13 0.13 1" specular="0.3" shininess="0.6"/>
+    <material name="mat_green" rgba="0.12 0.68 0.26 1" specular="0.3" shininess="0.6"/>
+    <material name="mat_blue"  rgba="0.16 0.34 0.86 1" specular="0.3" shininess="0.6"/>
+    <material name="nero_light" rgba="0.78 0.80 0.83 1" specular="0.35" shininess="0.55" reflectance="0.04"/>
+    <material name="nero_dark"  rgba="0.235 0.248 0.275 1" specular="0.30" shininess="0.55"/>
+    <material name="nero_white" rgba="0.72 0.735 0.755 1" specular="0.35" shininess="0.60"/>
+    <mesh name="nero_base_link_vis" file="assets/nero/base_link.STL"/>
+    <mesh name="nero_link1_vis" file="assets/nero/Link1.STL"/>
+    <mesh name="nero_link2_vis" file="assets/nero/Link2.STL"/>
+    <mesh name="nero_link3_vis" file="assets/nero/Link3.STL"/>
+    <mesh name="nero_link4_vis" file="assets/nero/Link4.STL"/>
+    <mesh name="nero_link5_vis" file="assets/nero/Link5.STL"/>
+    <mesh name="nero_link6_vis" file="assets/nero/Link6.STL"/>
+    <mesh name="nero_link7_vis" file="assets/nero/Link7.STL"/>
+    <mesh name="nero_end_effector_vis" file="assets/nero/stand_v2.STL"/>
+  </asset>
+
+  <worldbody>
+    <light name="key"  pos="1.10 -1.20 2.30" dir="-0.45 0.50 -1" directional="true"
+           diffuse="0.42 0.42 0.42" specular="0.18 0.18 0.18" castshadow="true"/>
+    <light name="fill" pos="-1.20 1.10 1.80" dir="0.55 -0.50 -1" directional="true"
+           diffuse="0.22 0.23 0.26" specular="0.06 0.06 0.06"/>
+    <light name="rim"  pos="-0.60 -1.60 1.60" dir="0.30 0.80 -0.75" directional="true"
+           diffuse="0.18 0.19 0.22"/>
+
+    <geom name="floor" type="plane" size="0 0 0.05" material="floor_mat"
+          contype="1" conaffinity="7"/>
+
+    <!-- 桌子：桌面 0.8m(x) x 1.2m(y)，台面高 0.74m -->
+    <body name="table" pos="0 0 0">
+      <geom name="table_top" type="box" pos="0 0 0.72" size="0.40 0.60 0.02"
+            material="wood" friction="0.9 0.02 0.002" contype="1" conaffinity="7"/>
+      <geom name="leg_0" type="box" pos=" 0.355  0.555 0.35" size="0.022 0.022 0.35" material="leg_mat" contype="1" conaffinity="7"/>
+      <geom name="leg_1" type="box" pos="-0.355  0.555 0.35" size="0.022 0.022 0.35" material="leg_mat" contype="1" conaffinity="7"/>
+      <geom name="leg_2" type="box" pos=" 0.355 -0.555 0.35" size="0.022 0.022 0.35" material="leg_mat" contype="1" conaffinity="7"/>
+      <geom name="leg_3" type="box" pos="-0.355 -0.555 0.35" size="0.022 0.022 0.35" material="leg_mat" contype="1" conaffinity="7"/>
+      <geom name="rail_x" type="box" pos="0 0.555 0.10" size="0.355 0.012 0.012" material="leg_mat" contype="1" conaffinity="7"/>
+      <geom name="rail_y" type="box" pos="0.355 0 0.10" size="0.012 0.555 0.012" material="leg_mat" contype="1" conaffinity="7"/>
+    </body>
+
+    <!-- AgileX NERO 机械臂，基座用 4x M5 固定在桌面上 -->
+    <body name="nero_mount" pos="-0.3 0 0.74">
+      <body name="nero_base" pos="0 0 0" quat="1 0 0 0" gravcomp="1">
+        <inertial pos="-0.00963615 0.000167866 0.044860102" mass="1.219964395" fullinertia="0.001122203625 0.001233380535 0.0013848265 0.000001447745 0.000038751836 -0.000001031597"/>
+        <geom name="base_link_vis" type="mesh" mesh="nero_base_link_vis" material="nero_dark" contype="2" conaffinity="5" group="2"/>
+        <geom name="base_link_col" type="cylinder" pos="0 0 0.043" size="0.05 0.043" contype="2" conaffinity="5" condim="3" friction="1.0 0.02 0.002" solref="0.005 1" solimp="0.95 0.99 0.001"/>
+        <body name="link1" pos="0 0 0.138" quat="1 0 0 0" gravcomp="1">
+          <joint name="joint1" type="hinge" pos="0 0 0" axis="0 0 1"
+                 range="-2.740167 2.740167" limited="true" armature="0.034"
+                 damping="1.3" frictionloss="0.05"
+                 actuatorfrcrange="-24 24"/>
+          <inertial pos="0.000715896 0.000898557 -0.025251763" mass="0.61468431" fullinertia="0.000283467211 0.00031494884 0.000319652623 0.000001517466 0.000001855128 0.000000937127"/>
+          <geom name="link1_vis" type="mesh" mesh="nero_link1_vis" material="nero_light" contype="2" conaffinity="5" group="2"/>
+          <geom name="link1_col" type="cylinder" pos="0 0 -0.0135" size="0.045 0.0435" contype="2" conaffinity="5" condim="3" friction="1.0 0.02 0.002" solref="0.005 1" solimp="0.95 0.99 0.001"/>
+          <body name="link2" pos="0 0 0" quat="0.000033 0.000033 0.707105 -0.707108" gravcomp="1">
+            <joint name="joint2" type="hinge" pos="0 0 0" axis="0 0 1"
+                   range="-1.780236 1.780236" limited="true" armature="0.03"
+                   damping="1.15" frictionloss="0.05"
+                   actuatorfrcrange="-24 24"/>
+            <inertial pos="0.001500063 -0.086480689 0.002332562" mass="0.852078226" fullinertia="0.002872209373 0.000534298878 0.003134170035 0.000019589361 0.00000077341 -0.000002240196"/>
+            <geom name="link2_vis" type="mesh" mesh="nero_link2_vis" material="nero_light" contype="2" conaffinity="5" group="2"/>
+            <geom name="link2_col" type="capsule" pos="0 -0.1 0" size="0.04 0.09" quat="0.707107 0.707107 0 0" contype="2" conaffinity="5" condim="3" friction="1.0 0.02 0.002" solref="0.005 1" solimp="0.95 0.99 0.001"/>
+            <body name="link3" pos="0 -0.31 0" quat="-0.000003 0.000003 -0.707108 0.707105" gravcomp="1">
+              <joint name="joint3" type="hinge" pos="0 0 0" axis="0 0 1"
+                     range="-2.792527 2.792527" limited="true" armature="0.026"
+                     damping="1" frictionloss="0.05"
+                     actuatorfrcrange="-24 24"/>
+              <inertial pos="0.000329369 0.000367394 -0.091201003" mass="0.901284729" fullinertia="0.000817459509 0.000901342413 0.000238136342 -0.000000199314 -0.000008020036 -0.0000035628"/>
+              <geom name="link3_vis" type="mesh" mesh="nero_link3_vis" material="nero_light" contype="2" conaffinity="5" group="2"/>
+              <geom name="link3_col" type="capsule" pos="0 0 -0.085" size="0.035 0.085" contype="2" conaffinity="5" condim="3" friction="1.0 0.02 0.002" solref="0.005 1" solimp="0.95 0.99 0.001"/>
+              <body name="link4" pos="0 0 0" quat="-0.000003 0.000003 -0.707108 0.707105" gravcomp="1">
+                <joint name="joint4" type="hinge" pos="0 0 0" axis="0 0 1"
+                       range="-1.047198 2.181662" limited="true" armature="0.022"
+                       damping="0.85" frictionloss="0.05"
+                       actuatorfrcrange="-24 24"/>
+                <inertial pos="-0.000909481 -0.050307143 0.009162955" mass="0.411038904" fullinertia="0.000436201658 0.000164123877 0.000498202136 0.000009643364 -0.00000038747 -0.000005211698"/>
+                <geom name="link4_vis" type="mesh" mesh="nero_link4_vis" material="nero_light" contype="2" conaffinity="5" group="2"/>
+                <geom name="link4_col" type="capsule" pos="0 -0.035 0" size="0.034 0.035" quat="0.707107 0.707107 0 0" contype="2" conaffinity="5" condim="3" friction="1.0 0.02 0.002" solref="0.005 1" solimp="0.95 0.99 0.001"/>
+                <body name="link5" pos="0 -0.27001 0" quat="0.499998 0.5 -0.5 0.500002" gravcomp="1">
+                  <joint name="joint5" type="hinge" pos="0 0 0" axis="0 0 1"
+                         range="-2.792527 2.792527" limited="true" armature="0.018"
+                         damping="0.7" frictionloss="0.05"
+                         actuatorfrcrange="-24 24"/>
+                  <inertial pos="0.000247509 -0.000503953 -0.103181108" mass="0.658381347" fullinertia="0.000717400362 0.000642342908 0.000212526155 0.000000607875 -0.00000185284 -0.000005875524"/>
+                  <geom name="link5_vis" type="mesh" mesh="nero_link5_vis" material="nero_light" contype="2" conaffinity="5" group="2"/>
+                  <geom name="link5_col" type="capsule" pos="0 0 -0.0725" size="0.035 0.0675" contype="2" conaffinity="5" condim="3" friction="1.0 0.02 0.002" solref="0.005 1" solimp="0.95 0.99 0.001"/>
+                  <body name="link6" pos="0 0 0" quat="0.499998 0.5 -0.5 0.500002" gravcomp="1">
+                    <joint name="joint6" type="hinge" pos="0 0 0" axis="0 0 1"
+                           range="-0.767945 0.994838" limited="true" armature="0.014"
+                           damping="0.55" frictionloss="0.05"
+                           actuatorfrcrange="-24 24"/>
+                    <inertial pos="0.000077699 0.001554283 -0.000196698" mass="0.086741524" fullinertia="0.000013548458 0.000024432723 0.000013925093 -0.000000063398 -0.000000144515 0.000000085171"/>
+                    <geom name="link6_vis" type="mesh" mesh="nero_link6_vis" material="nero_white" contype="2" conaffinity="5" group="2"/>
+                    <geom name="link6_col" type="sphere" pos="0 0 0" size="0.026" contype="2" conaffinity="5" condim="3" friction="1.0 0.02 0.002" solref="0.005 1" solimp="0.95 0.99 0.001"/>
+                    <body name="link7" pos="0 -0.0235 0" quat="0.707105 0.707108 0 0" gravcomp="1">
+                      <joint name="joint7" type="hinge" pos="0 0 0" axis="0 0 1"
+                             range="-1.692969 1.692969" limited="true" armature="0.01"
+                             damping="0.4" frictionloss="0.05"
+                             actuatorfrcrange="-24 24"/>
+                      <inertial pos="-0.000139608 -0.000102022 -0.002752098" mass="0.005826565" fullinertia="0.000000236472 0.000000236464 0.000000443811 0 -0.000000001305 0"/>
+                      <geom name="link7_vis" type="mesh" mesh="nero_link7_vis" material="nero_white" contype="2" conaffinity="5" group="2"/>
+                      <geom name="link7_col" type="cylinder" pos="0 0 -0.0048" size="0.014 0.0048" contype="2" conaffinity="5" condim="3" friction="1.0 0.02 0.002" solref="0.005 1" solimp="0.95 0.99 0.001"/>
+                      <body name="end_effector" pos="0.033 0 -0.0235" quat="1 0 0 0" gravcomp="1">
+                        <inertial pos="-0.01208 -0.00025 0.00032" mass="0.05" fullinertia="0.00002697 0.00004311 0.00002479 0 0 0"/>
+                        <geom name="end_effector_vis" type="mesh" mesh="nero_end_effector_vis" material="nero_white" contype="2" conaffinity="5" group="2"/>
+                        <geom name="end_effector_col" type="box" pos="0 0 -0.018" size="0.021 0.0275 0.03" contype="2" conaffinity="5" condim="3" friction="1.0 0.02 0.002" solref="0.005 1" solimp="0.95 0.99 0.001"/>
+                        <body name="gripper_base" pos="0 0 0.030">
+                          <inertial pos="0 0 0.040" mass="0.275" fullinertia="0.0004 0.0005 0.0004 0 0 0"/>
+                          <geom name="gripper_base_vis" type="box" pos="0 0 0.020" size="0.032 0.052 0.020" material="nero_dark" contype="0" conaffinity="0" group="2"/>
+                          <geom name="gripper_base_col" type="box" pos="0 0 0.020" size="0.030 0.050 0.020" contype="2" conaffinity="5" condim="3" friction="0.8 0.02 0.002" solref="0.005 1" solimp="0.95 0.99 0.001"/>
+                          <body name="finger_l" pos="0 0.014 0">
+                            <joint name="grip_l" type="slide" axis="0 1 0" range="0 0.055" limited="true" armature="0.002" damping="3.0" frictionloss="0.05" actuatorfrcrange="-50 50"/>
+                            <inertial pos="0 0 0.078" mass="0.1125" fullinertia="1.2e-5 1.6e-5 1.2e-5 0 0 0"/>
+                            <geom name="finger_l_vis" type="box" pos="0 0 0.0775" size="0.010 0.007 0.0375" material="nero_white" contype="0" conaffinity="0" group="2"/>
+                            <geom name="finger_l_pad" type="box" pos="0 -0.008 0.100" size="0.010 0.006 0.015" contype="2" conaffinity="5" condim="4" friction="2.4 0.06 0.0005" solref="0.003 1" solimp="0.98 0.998 0.001"/>
+                          </body>
+                          <body name="finger_r" pos="0 -0.014 0">
+                            <joint name="grip_r" type="slide" axis="0 -1 0" range="0 0.055" limited="true" armature="0.002" damping="3.0" frictionloss="0.05" actuatorfrcrange="-50 50"/>
+                            <inertial pos="0 0 0.078" mass="0.1125" fullinertia="1.2e-5 1.6e-5 1.2e-5 0 0 0"/>
+                            <geom name="finger_r_vis" type="box" pos="0 0 0.0775" size="0.010 0.007 0.0375" material="nero_white" contype="0" conaffinity="0" group="2"/>
+                            <geom name="finger_r_pad" type="box" pos="0 0.008 0.100" size="0.010 0.006 0.015" contype="2" conaffinity="5" condim="4" friction="2.4 0.06 0.0005" solref="0.003 1" solimp="0.98 0.998 0.001"/>
+                          </body>
+                        </body>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+
+    <!-- 三个方块：边长 10cm，摆在台面上 -->
+    <body name="cube_red" pos="0.16 -0.26 0.78" quat="0.994522 0 0 0.104528">
+      <freejoint name="cube_red_free"/>
+      <geom name="cube_red_geom" type="box" size="0.04 0.04 0.04" material="mat_red" mass="0.3"
+            friction="1.0 0.02 0.002" contype="4" conaffinity="7"/>
+    </body>
+    <body name="cube_green" pos="0.18 0 0.78" quat="0.997564 0 0 -0.069756">
+      <freejoint name="cube_green_free"/>
+      <geom name="cube_green_geom" type="box" size="0.04 0.04 0.04" material="mat_green" mass="0.3"
+            friction="1.0 0.02 0.002" contype="4" conaffinity="7"/>
+    </body>
+    <body name="cube_blue" pos="0.15 0.26 0.78" quat="0.984808 0 0 0.173648">
+      <freejoint name="cube_blue_free"/>
+      <geom name="cube_blue_geom" type="box" size="0.04 0.04 0.04" material="mat_blue" mass="0.3"
+            friction="1.0 0.02 0.002" contype="4" conaffinity="7"/>
+    </body>
+
+    <camera name="overview" pos="1.05 -1.2 1.42" xyaxes="0.7359 0.6771 0 -0.1912 0.2078 0.9593" fovy="40"/>
+    <camera name="arm_front" pos="-0.28 -0.92 1.1" xyaxes="0.9822 -0.1881 0 0.0195 0.1021 0.9946" fovy="42"/>
+    <camera name="arm_side" pos="0.62 -0.6 1.18" xyaxes="0.6222 0.7828 0 -0.1392 0.1106 0.9841" fovy="42"/>
+    <camera name="top" pos="0.05 0 2.1" xyaxes="1 0 0 0 1 0" fovy="44"/>
+  </worldbody>
+
+  <actuator>
+    <position name="joint1_act" joint="joint1" kp="400" kv="12" ctrlrange="-2.740167 2.740167" forcerange="-24 24"/>
+    <position name="joint2_act" joint="joint2" kp="400" kv="12" ctrlrange="-1.780236 1.780236" forcerange="-24 24"/>
+    <position name="joint3_act" joint="joint3" kp="300" kv="9" ctrlrange="-2.792527 2.792527" forcerange="-24 24"/>
+    <position name="joint4_act" joint="joint4" kp="200" kv="6" ctrlrange="-1.047198 2.181662" forcerange="-24 24"/>
+    <position name="joint5_act" joint="joint5" kp="120" kv="4" ctrlrange="-2.792527 2.792527" forcerange="-24 24"/>
+    <position name="joint6_act" joint="joint6" kp="50" kv="2" ctrlrange="-0.767945 0.994838" forcerange="-24 24"/>
+    <position name="joint7_act" joint="joint7" kp="25" kv="1" ctrlrange="-1.692969 1.692969" forcerange="-24 24"/>
+    <position name="grip_l_act" joint="grip_l" kp="3000" kv="6" ctrlrange="0 0.055" forcerange="-50 50"/>
+    <position name="grip_r_act" joint="grip_r" kp="3000" kv="6" ctrlrange="0 0.055" forcerange="-50 50"/>
+  </actuator>
+
+  <keyframe>
+    <key name="ready" qpos="0.34784 -0.94475 1.4488 0.60458 -0.30369 -0.56828 -0.38572 0.05 0.05"/>
+    <key name="hover" qpos="0.59725 -1.19398 1.54671 1.24093 -0.35168 -0.14085 -0.81297 0.05 0.05"/>
+    <key name="grasp" qpos="0.60545 -1.32209 1.79507 1.37759 -0.29112 0.16493 -0.8594 0.05 0.05"/>
+    <key name="grasp_red" qpos="-0.03857 -1.43588 1.68512 1.07914 -0.17296 0.03595 -0.89727 0.05 0.05"/>
+    <key name="grasp_blue" qpos="1.06727 -1.50884 1.5509 1.06465 -0.04468 -0.0473 0.35011 0.05 0.05"/>
+  </keyframe>
+</mujoco>
