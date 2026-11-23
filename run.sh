@@ -11,7 +11,8 @@
 #   ./run.sh detail      重出夹爪特写图到 out/
 #   ./run.sh pp-shots    重出抓取-放置的过程图到 out/（带 --all 出三色 21 张）
 #   ./run.sh depth       腕部深度相机：三色各一张 2×2 拼版 + 总拼版
-#   ./run.sh depth-check 深度相机测量自检（三块方块中心误差 < 6 mm 返回 0）
+#   ./run.sh depth-check 腕部深度相机测量自检（三块方块中心误差 < 8 mm 返回 0）
+#   ./run.sh mount       腕部相机安装特写 + 第一视角对比图
 #   ./run.sh validate    跑 7 段全量校验（含深度相机）
 #   ./run.sh desk        只看第一版的桌子+三色方块
 set -e
@@ -38,6 +39,7 @@ case "${1:-}" in
   depth)    shift; exec "$PY" depth_show.py --multi "$@" ;;
   depth-check) shift; exec "$PY" depth_view.py --check "$@" ;;
   depth-view)  shift; exec "$PY" depth_view.py "$@" ;;
+  mount)       shift; exec "$PY" render_depthcam_shot.py "$@" ;;
   validate) shift; exec "$PY" validate_nero.py "$@" ;;
   desk)     shift; exec "$PY" view.py "$@" ;;
   *)        exec "$PY" view_scene.py "$@" ;;

@@ -27,8 +27,9 @@ cd ~/NERO
 ./run.sh place blue   # 同上，但搬蓝方块（也支持 red / all）
 ./run.sh place all    # 依次搬三块，并断言先放的不会被后放的挪走
 ./run.sh validate     # 7 段全量校验（含深度相机）
-./run.sh depth        # 深度相机拼版图：RGB / 深度伪彩 / 俯视点云 / 测量数值
-./run.sh depth-check  # 深度相机测量自检，三块方块中心误差 < 6 mm 返回 0
+./run.sh depth        # 腕部深度相机三色拼版图：RGB / 深度伪彩 / 俯视点云 / 测量数值
+./run.sh depth-check  # 腕部深度相机自检，三块方块中心误差 < 8 mm 返回 0
+./run.sh mount        # 腕部相机安装特写 + 第一视角对比图 out/wrist_cam_mount.png
 ./run.sh shots        # 重出成果图到 out/
 ./run.sh pp-shots all # 重出三色各 7 张过程图到 out/
 ./run.sh detail       # 夹爪特写图到 out/
