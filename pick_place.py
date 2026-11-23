@@ -40,7 +40,11 @@ LABEL = {"red": "红方块", "green": "绿方块", "blue": "蓝方块"}
 
 
 def phases_for(col):
-    """某颜色的 11 段动作表：(关键帧, 夹爪 ctrl, 时长 s, 说明)。"""
+    """某颜色的 11 段动作表：(关键帧, 夹爪 ctrl, 时长 s, 说明)。
+
+    **仅用于诊断脚本**（`tools/diag_*.py`）。实际执行走 `plan_for()`：
+    那里把相邻途经点串成一条连续轨迹，不再每段都停车。
+    """
     name = LABEL[col]
     return [
         ("%s_hover" % col,       GRIP_OPEN,  2.0, "移到%s正上方" % name),
@@ -55,6 +59,196 @@ def phases_for(col):
         ("%s_transit" % col,     GRIP_OPEN,  2.0, "往回走"),
         ("ready",                GRIP_OPEN,  2.5, "回到待命姿态"),
     ]
+
+
+def plan_for(col):
+    """某颜色的执行计划：3 条连续轨迹 + 2 次夹爪动作。
+
+    与 `phases_for()` 的区别是**相邻途经点串成一条连续轨迹**：机械臂
+    经过 lift / transit 这类中途点时不停车、不减速，只有真正需要
+    改变夹爪状态的两个点（grasp、place）才停顿。
+
+    但**接近段必须在 hover 处把速度降到 0**：如果带着速度冲过 hover
+    直接扎进方块，指尖会从侧面撞上方棱，蓝块（+20° 偏航、投影宽
+    112.7 mm）直接被撞倒。所以 hover / place_hover 设为"零速途经点"，
+    grasp / place 所在段额外放慢 —— 这是"落点要稳"，与"中途别停车"
+    并不矛盾。
+
+    每项：("path", [关键帧,...], 夹爪, 说明) 或 ("dwell", [], 夹爪, 说明)
+    列表首项用 None 表示"当前姿态"。
+    """
+    name = LABEL[col]
+    hv = "%s_hover" % col
+    g, l, t = "%s_grasp" % col, "%s_lift" % col, "%s_transit" % col
+    ph, pl = "%s_place_hover" % col, "%s_place" % col
+    return [
+        ("path",  [None, hv, g], GRIP_OPEN,  "接近并下降到%s中心" % name,
+         {hv}, {g}),
+        ("dwell", [], GRIP_CLOSE, "闭合夹爪"),
+        ("path",  [g, l, t, ph, pl], GRIP_CLOSE, "提起 → 平移 → 放进篮子",
+         {ph}, {pl}),
+        ("dwell", [], GRIP_OPEN, "张开夹爪释放"),
+        ("path",  [pl, ph, t, "ready"], GRIP_OPEN, "退出篮子 → 回到待命",
+         set(), {pl}),
+    ]
+
+
+# --- 连续轨迹 ---------------------------------------------------------------
+# 关节限速与 build_nero.py 的 JOINT_VEL 一致：j1~j3 = pi，j4~j7 = 1.25*pi
+JVEL = np.array([math.pi] * 3 + [1.25 * math.pi] * 4)
+JV_PEAK = 1.05          # 轨迹允许的峰值关节速度（rad/s），约为限速的 17~33%
+V_NOM = 0.72            # 规划目标速度（rad/s）；S 形曲线的峰值约为它的 1.5~1.9 倍
+T_SEG_MIN = 0.45        # 单段最短时长（s）
+DWELL_SEC = 0.55        # 夹爪开/合停留时长（s）
+T_SCALE_MAX = 6.0       # 速度超限时最多把整条轨迹放慢到几倍
+SLOW_SEG = 2.2          # 需要精确落点的段（下降夹取、下放）放慢的倍数
+
+
+def _hermite(qa, qb, ma, mb, T, n):
+    """三次 Hermite 采样：给定两端位置与切向速度，返回 n 个点（不含末端）。
+
+    注意：三次 Hermite 只保证 C1（速度连续），加速度在途经点会突变，
+    高速时看得出来"抽一下"。实际采样走 `_hermite5()`，这个函数只在
+    `hold` 退化路径里用不到，留着便于对比/诊断。
+    """
+    s = (np.arange(n, dtype=float) / n)[:, None]
+    s2, s3 = s * s, s * s * s
+    h00 = 2 * s3 - 3 * s2 + 1
+    h10 = s3 - 2 * s2 + s
+    h01 = -2 * s3 + 3 * s2
+    h11 = s3 - s2
+    return h00 * qa + h10 * T * ma + h01 * qb + h11 * T * mb
+
+
+def _hermite5(qa, qb, ma, mb, aa, ab, T, n):
+    """五次 Hermite：同时匹配两端的位置、速度、加速度 → 整条曲线 C2。
+
+    三次 Hermite 只在节点上做到速度连续，加速度是分段的，节点处会
+    跳变（jerk 无穷大），视觉上就是"到点抽一下"。五次版本让加速度
+    也连续，起步/停车都是 S 形速度曲线，动作平滑得多。
+    """
+    s = (np.arange(n, dtype=float) / n)[:, None]
+    s2 = s * s
+    s3 = s2 * s
+    s4 = s3 * s
+    s5 = s4 * s
+    h0 = 1 - 10 * s3 + 15 * s4 - 6 * s5
+    h1 = s - 6 * s3 + 8 * s4 - 3 * s5
+    h2 = 0.5 * s2 - 1.5 * s3 + 1.5 * s4 - 0.5 * s5
+    h3 = 10 * s3 - 15 * s4 + 6 * s5
+    h4 = -4 * s3 + 7 * s4 - 3 * s5
+    h5 = 0.5 * s3 - s4 + 0.5 * s5
+    return (h0 * qa + h1 * T * ma + h2 * T * T * aa
+            + h3 * qb + h4 * T * mb + h5 * T * T * ab)
+
+
+def _sample_path(Q, T, damp, dt, hold=()):
+    """给定每段时长 T 与中间切向衰减 damp，采样整条轨迹。
+
+    hold 里的下标表示该途经点**必须零速、零加速度通过**（像刹车点），
+    用于"先到 hover 停稳、再竖直下降夹取"这类需要精确落点的地方。
+
+    途经点速度用 Catmull-Rom 的时域版本，加速度用相邻两段弦加速度的
+    差分（节点二阶导），两者都参与插值 → 整条轨迹 C2 连续。
+
+    返回 (样本矩阵, 各途经点下标)。
+    """
+    nq = len(Q)
+    knots = np.concatenate([[0.0], np.cumsum(T)])
+    M = np.zeros_like(Q)
+    A = np.zeros_like(Q)
+    if damp > 0.0:
+        # 节点速度：相邻两点的弦速度
+        for i in range(1, nq - 1):
+            if i in hold:
+                continue
+            M[i] = damp * (Q[i + 1] - Q[i - 1]) / (knots[i + 1] - knots[i - 1])
+        # 节点加速度：两端弦加速度之差 / 两端时长的平均
+        for i in range(1, nq - 1):
+            if i in hold:
+                continue
+            Ta = max(T[i - 1], 1e-6)
+            Tb = max(T[i], 1e-6)
+            va = (Q[i] - Q[i - 1]) / Ta
+            vb = (Q[i + 1] - Q[i]) / Tb
+            A[i] = damp * (vb - va) / (0.5 * (Ta + Tb))
+
+    parts, idx = [], []
+    for i in range(nq - 1):
+        n = max(2, int(round(T[i] / dt)))
+        idx.append(sum(len(p) for p in parts))
+        parts.append(_hermite5(Q[i], Q[i + 1], M[i], M[i + 1],
+                               A[i], A[i + 1], T[i], n))
+    idx.append(sum(len(p) for p in parts))
+    samples = np.vstack(parts + [Q[-1][None, :]])
+    return samples, idx
+
+
+def _build_path(Q, lo, hi, dt, hold=(), slow=()):
+    """按途经点造一条连续轨迹，返回 (样本, 各途经点下标, 每段时长)。
+
+    切向用 Catmull-Rom 的时域版本：端点速度为 0，中间点取相邻两点的
+    弦速度，因此**经过中间途经点时不减速**（这是"流畅"的关键）。
+
+    hold: 必须零速通过的途经点下标（刹车点）。
+    slow: 需要放慢的**段**下标（0-based，段 i = Q[i]→Q[i+1]）。
+
+    两级重试：
+      ① 关节限位越界 → 逐步衰减中间切向（1.0 → 0.6 → 0.35 → 0.2 → 0.1 → 0）
+      ② 关节速度超限 → 整条轨迹按比例放慢，再重试。
+    """
+    hold = set(hold)
+    slow = set(slow)
+    Ls = np.abs(np.diff(Q, axis=0)).max(axis=1)
+    T = np.maximum(T_SEG_MIN, 1.6 * Ls / V_NOM)
+    for i in slow:
+        if 0 <= i < len(T):
+            T[i] *= SLOW_SEG
+
+    for _round in range(12):
+        grew = False
+        for damp in (1.0, 0.6, 0.35, 0.2, 0.1, 0.0):
+            samples, idx = _sample_path(Q, T, damp, dt, hold)
+            if (np.maximum(samples - hi, 0) + np.maximum(lo - samples, 0)).max() > 1e-9:
+                continue                      # 越限，换更保守的切向
+            vmax = float(np.abs(np.gradient(samples, dt, axis=0)).max())
+            if vmax <= JV_PEAK:
+                return samples, idx, T, damp
+            # 速度超限：整条放慢，重新走一遍
+            T = T * max(1.15, vmax / JV_PEAK)
+            grew = True
+            break
+        if not grew:
+            break
+        if T.max() / T_SEG_MIN > T_SCALE_MAX:
+            break
+    raise RuntimeError("无法构造无越限轨迹（Q 的关节跳变过大？）")
+
+
+def _step_loop(m, d, dt, nsteps, ctrl_of, viewer=None, t_ref=None):
+    """执行 nsteps 步；viewer 模式下按墙钟节拍同步，保证真实速度播放。
+
+    早期版本在 --viewer 里是"能跑多快跑多快"（实测 82 倍速），
+    画面上机械臂一闪而过、看着很卡。这里改成实时节拍。
+    """
+    if viewer is None:
+        for i in range(nsteps):
+            d.ctrl[:] = ctrl_of(i)
+            mujoco.mj_step(m, d)
+        return
+    dec = max(1, int(round((1.0 / 60.0) / dt)))     # 渲染约 60 Hz
+    if t_ref is None:
+        t_ref = [time.perf_counter()]
+    for i in range(nsteps):
+        d.ctrl[:] = ctrl_of(i)
+        mujoco.mj_step(m, d)
+        if (i + 1) % dec == 0 or i == nsteps - 1:
+            target = t_ref[0] + (i + 1) * dt
+            wait = target - time.perf_counter()
+            if wait > 0:
+                time.sleep(wait)
+            viewer.sync()
+
 
 
 PHASES = phases_for("green")   # 兼容旧代码 / 诊断脚本
@@ -99,13 +293,117 @@ def goto(m, d, qad, key, grip, secs, viewer=None):
             viewer.sync()
 
 
-def move(m, d, qad, key, grip, secs, viewer=None):
-    """余弦平滑地伺服到关键帧。
+def move_path(m, d, qad, keys, grip, viewer=None, hold=(), slow=(), settle=0.15):
+    """沿一串关键帧走一条**连续**轨迹，末尾短暂按住让误差收敛。
 
-    阶跃式 ctrl 会让关节在第一步就要求满速，末端加速度可达 15 m/s² 量级，
-    指尖与方块之间会蹭掉 4~10 mm（实测每段搬运累计 23 mm，方块最终偏离
-    篮心 25 mm）。用 s(t)=0.5(1-cos(pi t/T)) 过渡，起停加速度为 0，
-    滑移降到 1 mm 以内。
+    keys 里可以有 None，表示"从当前姿态出发"。
+    hold: 必须零速通过的途经点**名字**集合（刹车点，用于精确落点）。
+    slow: 需要放慢的**段**下标集合（0-based）。
+    settle: 末尾按住时长（s）。后面紧跟 dwell 时用小值即可，
+            否则夹爪动作期间本来就在原地等。
+
+    返回 (采样矩阵, 各途经点下标, 每段时长)。
+    """
+    dt = m.opt.timestep
+    Q = []
+    for k in keys:
+        if k is None:
+            Q.append(np.array([d.qpos[a] for a in qad], dtype=float))
+        else:
+            Q.append(np.array([m.key(k).qpos[a] for a in qad], dtype=float))
+    Q = np.array(Q)
+    lo = np.array([m.jnt_range[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, j)][0]
+                   for j in ARM])
+    hi = np.array([m.jnt_range[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, j)][1]
+                   for j in ARM])
+    hold_i = {i for i, k in enumerate(keys) if k is not None and k in set(hold)}
+    # slow 传的是"段终点关键帧名"，换算成段下标（段 i = Q[i] → Q[i+1]）
+    slow_i = set()
+    for k in slow:
+        if k in keys:
+            i = keys.index(k)
+            if i > 0:
+                slow_i.add(i - 1)
+    samp, idx, T, _M = _build_path(Q, lo, hi, dt, hold=hold_i, slow=slow_i)
+    n = len(samp)
+    g0 = float(d.ctrl[7])
+    g1 = float(grip)
+    # 夹爪在前 30% 时间内走完，避免和臂运动末期耦合
+    ng = max(1, int(0.30 * n))
+    # 起点从**当前 ctrl** 平滑接管到轨迹首点（避免段边界留 0.4° 台阶）
+    c0 = np.array(d.ctrl[:7], dtype=float)
+    nb = max(2, int(0.15 / dt))
+
+    def ctrl_of(i):
+        c = np.empty(m.nu)
+        if i < nb:
+            s = 0.5 * (1.0 - math.cos(math.pi * (i + 1) / nb))
+            c[:7] = c0 + (samp[i] - c0) * s
+        else:
+            c[:7] = samp[i]
+        if i < ng:
+            s = 0.5 * (1.0 - math.cos(math.pi * (i + 1) / ng))
+            c[7] = c[8] = g0 + (g1 - g0) * s
+        else:
+            c[7] = c[8] = g1
+        return c
+
+    t0 = time.perf_counter()
+    _step_loop(m, d, dt, n, ctrl_of, viewer, t_ref=[t0])
+    # 末尾按住一小段，把残余跟踪误差压下去。
+    # 后面紧跟 dwell（原地夹爪动作）时不用长等 —— 夹爪动作期间本来就在原地。
+    nhold = max(1, int(settle / dt))
+
+    def ctrl_hold(i):
+        c = np.empty(m.nu)
+        c[:7] = Q[-1]
+        c[7] = c[8] = g1
+        return c
+
+    _step_loop(m, d, dt, nhold, ctrl_hold, viewer,
+               t_ref=[t0 + n * dt])
+    return samp, idx, T
+
+
+def dwell(m, d, qad, grip, secs=DWELL_SEC, viewer=None):
+    """在当前位置停住，只改夹爪（张开/闭合）。
+
+    关节目标从**上一步的 ctrl** 平滑过渡到实测 qpos（0.2 s 余弦混合）。
+    直接用 qpos 当 ctrl 会在段边界留一个小台阶（实测 0.44°），
+    混合一下就没有任何跳变了。
+    """
+    dt = m.opt.timestep
+    n = max(1, int(secs / dt))
+    nb = max(2, int(0.20 / dt))
+    g0 = float(d.ctrl[7])
+    c0 = np.array(d.ctrl[:7], dtype=float)
+    q_hold = np.array([d.qpos[a] for a in qad], dtype=float)
+
+    def ctrl_of(i):
+        c = np.empty(m.nu)
+        if i < nb:
+            s = 0.5 * (1.0 - math.cos(math.pi * (i + 1) / nb))
+            c[:7] = c0 + (q_hold - c0) * s
+        else:
+            c[:7] = q_hold
+        s = 0.5 * (1.0 - math.cos(math.pi * (i + 1) / n))
+        c[7] = c[8] = g0 + (grip - g0) * s
+        return c
+
+    _step_loop(m, d, dt, n, ctrl_of, viewer, t_ref=[time.perf_counter()])
+
+
+def qad_of(m):
+    return [m.jnt_qposadr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, j)]
+            for j in ARM]
+
+
+def move(m, d, qad, key, grip, secs, viewer=None):
+    """余弦平滑地伺服到关键帧（单段，留给诊断脚本用）。
+
+    **主流程已不再用它**：单段之间要停车，11 段下来一共静止 8.11 s，
+    看着就是"一顿一顿"。实际执行走 `run()` 里的 `plan_for()` +
+    `move_path()`，相邻途经点串成连续轨迹。
     """
     q0 = np.array([d.qpos[a] for a in qad], dtype=float)
     q1 = np.array([m.key(key).qpos[a] for a in qad], dtype=float)
@@ -189,14 +487,21 @@ def run(m, d, qad, col="green", viewer=None, verbose=True):
         print("任务：把%s [%.3f %.3f %.3f] 搬进篮子 [%.3f %.3f]，格位 [%.3f %.3f]（内腔 %.0f mm）"
               % (LABEL[col], *p0, bx, by, tx, ty, 2000 * inner))
         print()
-        print("%-6s %-26s %-26s %s" % ("阶段", "方块位置", "指尖中点", "说明"))
-    for i, (key, grip, secs, note) in enumerate(phases_for(col)):
-        move(m, d, qad, key, grip, secs, viewer)
+        print("%-4s %-30s %-26s %-26s %s"
+              % ("步", "动作", "方块位置", "指尖中点", "说明"))
+    for i, item in enumerate(plan_for(col)):
+        kind, keys, grip, note = item[0], item[1], item[2], item[3]
+        hold = item[4] if len(item) > 4 else ()
+        slow = item[5] if len(item) > 5 else ()
+        if kind == "path":
+            move_path(m, d, qad, keys, grip, viewer, hold=hold, slow=slow)
+        else:
+            dwell(m, d, qad, grip, viewer=viewer)
         p = d.xpos[bid].copy()
         pm = pad_mid(m, d)
         if verbose:
-            print("%-6d [%.3f %.3f %.3f]        [%.3f %.3f %.3f]      %s"
-                  % (i + 1, *p, *pm, note))
+            print("%-4d %-30s [%.3f %.3f %.3f]        [%.3f %.3f %.3f]      %s"
+                  % (i + 1, kind, *p, *pm, note))
     ok, p, bc, ft, inner = cube_in_basket(m, d, cube)
     if verbose:
         print()
@@ -226,6 +531,7 @@ def shoot(m, d, name, look, dist, az, el, fovy=42, w=1280, h=720):
 
 
 def shots(m, d, qad, col):
+    """出过程图：沿连续轨迹跑到每个途经点时抓一张（轨迹本身不停车）。"""
     reset(m, d, qad)
     cube = CUBE_OF[col]
     bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, cube)
@@ -243,15 +549,69 @@ def shots(m, d, qad, col):
         # 必须用俯视（el=-52）+ 近距离才能看到方块躺在篮底
         "%s_place" % col: ("pp_%s_5_placed" % col, (tx, ty, ft + 0.05), 0.62, 62, -52),
     }
+    dt = m.opt.timestep
     shot = set()
-    for i, (key, grip, secs, note) in enumerate(phases_for(col)):
-        move(m, d, qad, key, grip, secs)
-        if key in marks and key not in shot:
-            nm, look, dist, az, el = marks[key]
-            shoot(m, d, nm, look, dist, az, el)
-            shot.add(key)
-            print("  写出 out/%s.png   %s z=%.4f"
-                  % (nm, LABEL[col], d.xpos[bid][2]))
+    pending = []          # 本段结尾要拍的（等后续 dwell 结束后再拍）
+
+    def take(name):
+        if name in shot or name not in marks:
+            return
+        nm, look, dist, az, el = marks[name]
+        shoot(m, d, nm, look, dist, az, el)
+        shot.add(name)
+        print("  写出 out/%s.png   %s z=%.4f" % (nm, LABEL[col], d.xpos[bid][2]))
+
+    for item in plan_for(col):
+        kind, keys, grip, note = item[0], item[1], item[2], item[3]
+        hold = item[4] if len(item) > 4 else ()
+        slow = item[5] if len(item) > 5 else ()
+        if kind != "path":
+            dwell(m, d, qad, grip)
+            for name in pending:      # 夹爪动作结束才是"放好/夹住"的稳态
+                take(name)
+            pending = []
+            continue
+        Q = [np.array([d.qpos[a] for a in qad], dtype=float) if k is None
+             else np.array([m.key(k).qpos[a] for a in qad], dtype=float)
+             for k in keys]
+        Q = np.array(Q)
+        lo = np.array([m.jnt_range[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, j)][0]
+                       for j in ARM])
+        hi = np.array([m.jnt_range[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, j)][1]
+                       for j in ARM])
+        hold_i = {i for i, k in enumerate(keys) if k is not None and k in set(hold)}
+        slow_i = set()
+        for k in slow:
+            if k in keys:
+                i = keys.index(k)
+                if i > 0:
+                    slow_i.add(i - 1)
+        samp, idx, T, _M = _build_path(Q, lo, hi, dt, hold=hold_i, slow=slow_i)
+        n = len(samp)
+        g0 = float(d.ctrl[7])
+        ng = max(1, int(0.30 * n))
+        # 中间途经点即时抓拍；最后一个途经点留到段末/夹爪动作之后
+        want = {}
+        for k in keys[1:-1]:
+            if k in marks and k not in shot:
+                want[idx[keys.index(k)]] = k
+        for i in range(n + int(0.25 / dt)):
+            if i < n:
+                c = np.empty(m.nu)
+                c[:7] = samp[i]
+                c[7] = c[8] = (g0 + (grip - g0) * 0.5 * (1.0 - math.cos(math.pi * (i + 1) / ng))
+                               if i < ng else grip)
+                d.ctrl[:] = c
+            else:
+                d.ctrl[:7] = Q[-1]
+                d.ctrl[7] = d.ctrl[8] = grip
+            mujoco.mj_step(m, d)
+            if i in want:
+                take(want[i])
+        if keys[-1] in marks and keys[-1] not in shot:
+            pending.append(keys[-1])
+    for name in pending:
+        take(name)
     # 收尾全景 + 篮子俯视特写
     shoot(m, d, "pp_%s_6_done" % col, (bx + 0.10, by - 0.22, 0.88), 1.15, 60, -30)
     shoot(m, d, "pp_%s_7_basket_top" % col, (bx, by, ft + 0.05), 0.85, 62, -68)
