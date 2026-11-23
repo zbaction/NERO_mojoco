@@ -10,7 +10,10 @@
 #   ./run.sh shots       重出成果图到 out/
 #   ./run.sh detail      重出夹爪特写图到 out/
 #   ./run.sh pp-shots    重出抓取-放置的过程图到 out/（带 --all 出三色 21 张）
-#   ./run.sh validate    跑 6 段全量校验
+#   ./run.sh depth       深度相机：出 out/depth_camera.png 拼版（RGB/深度/点云/测量）
+#   ./run.sh depth --multi  额外出 ready / green_hover / green_grasp 三个位姿的深度图
+#   ./run.sh depth-check 深度相机测量自检（三块方块中心误差 < 6 mm 返回 0）
+#   ./run.sh validate    跑 7 段全量校验（含深度相机）
 #   ./run.sh desk        只看第一版的桌子+三色方块
 set -e
 cd "$(dirname "$0")"
@@ -33,6 +36,9 @@ case "${1:-}" in
   shots)    shift; exec "$PY" render_showcase.py "$@" ;;
   detail)   shift; exec "$PY" render_detail.py "$@" ;;
   pp-shots) shift; exec "$PY" pick_place.py --shots $(pick_args "$@") ;;
+  depth)    shift; exec "$PY" depth_show.py "$@" ;;
+  depth-check) shift; exec "$PY" depth_view.py --check "$@" ;;
+  depth-view)  shift; exec "$PY" depth_view.py "$@" ;;
   validate) shift; exec "$PY" validate_nero.py "$@" ;;
   desk)     shift; exec "$PY" view.py "$@" ;;
   *)        exec "$PY" view_scene.py "$@" ;;

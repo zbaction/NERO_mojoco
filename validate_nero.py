@@ -218,6 +218,58 @@ def main():
             check(frac > 0.004, "%s 视角能看到机械臂（>0.4%%）" % cname)
         rend.close()
 
+    # ---------------- 7) 深度相机
+    print("\n[7] 深度相机（RGB-D）")
+    cid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, "depth_cam")
+    check(cid >= 0, "场景里有 depth_cam 相机")
+    if cid >= 0:
+        d.qpos[:] = m.key("ready").qpos
+        mujoco.mj_forward(m, d)
+        W, H = 848, 480
+        check(W <= m.vis.global_.offwidth and H <= m.vis.global_.offheight,
+              "深度图 %dx%d 不超过离屏帧缓冲 %dx%d"
+              % (W, H, m.vis.global_.offwidth, m.vis.global_.offheight))
+        rd = mujoco.Renderer(m, H, W)
+        rd.enable_depth_rendering()
+        rd.update_scene(d, camera=cid)
+        dep = rd.render().copy()
+        rd.disable_depth_rendering()
+        rd.update_scene(d, camera=cid)
+        rgb = rd.render().copy()
+        rd.close()
+        Image.fromarray(rgb).save(OUT / "depth_cam_rgb.png")
+        print("       分辨率 %dx%d  fovy %.1f°  光心 [%.2f %.2f %.2f]"
+              % (W, H, m.cam_fovy[cid], *d.cam_xpos[cid]))
+        check(rgb.std() > 12.0, "RGB 图有内容（std=%.1f）" % rgb.std())
+        valid = (dep > 0.05) & (dep < 2.5)
+        check(valid.mean() > 0.30, "有效几何占比 %.1f%%" % (100 * valid.mean()))
+        check(dep[valid].min() > 0.30 and dep[valid].max() < 2.5,
+              "有效深度 %.2f~%.2f m 落在合理范围" % (dep[valid].min(), dep[valid].max()))
+
+        # 用点云拟合桌面高度，验证内参与外参自洽
+        fovy = float(m.cam_fovy[cid])
+        fy = 0.5 * H / math.tan(math.radians(fovy) / 2)
+        uu, vv = np.meshgrid(np.arange(W) + 0.5, np.arange(H) + 0.5)
+        xc = (uu - W / 2) / fy * dep
+        yc = -(vv - H / 2) / fy * dep
+        R = np.array(d.cam_xmat[cid]).reshape(3, 3)
+        pw = (np.stack([xc, yc, -dep], -1) @ R.T + np.array(d.cam_xpos[cid]))
+        flat = pw[valid]
+        tab = flat[np.abs(flat[:, 2] - TABLE_Z) < 0.02]
+        check(len(tab) > 2000, "桌面上采到 %d 个点（>2000）" % len(tab))
+        if len(tab):
+            err = abs(float(np.median(tab[:, 2])) - TABLE_Z)
+            print("       桌面高度中位数 %.4f m（真值 %.3f），误差 %.1f mm"
+                  % (np.median(tab[:, 2]), TABLE_Z, 1000 * err))
+            check(err < 0.006, "点云桌面高度误差 < 6 mm")
+
+        # 相机安装几何：必须站在桌面外、不能悬在桌面上方
+        p = np.array(d.cam_xpos[cid])
+        outside = abs(p[0]) > 0.42 or abs(p[1]) > 0.62
+        check(outside and p[2] > 0.95, "相机立柱在桌面外侧、高度 %.2f m" % p[2])
+        axis = -R[:, 2]
+        check(axis[2] < -0.30, "光轴朝下（z 分量 %.2f）" % axis[2])
+
     print("\n结果: %s" % ("全部通过" if ok else "有失败项"))
     return 0 if ok else 1
 

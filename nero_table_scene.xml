@@ -26,6 +26,8 @@
     <material name="mat_green" rgba="0.12 0.68 0.26 1" specular="0.3" shininess="0.6"/>
     <material name="mat_blue"  rgba="0.16 0.34 0.86 1" specular="0.3" shininess="0.6"/>
     <material name="mat_basket" rgba="0.55 0.40 0.22 1" specular="0.15" shininess="0.2"/>
+    <material name="mat_cam"   rgba="0.18 0.19 0.21 1" specular="0.30" shininess="0.5"/>
+    <material name="mat_lens"  rgba="0.06 0.10 0.16 1" specular="0.85" shininess="0.95"/>
     <material name="nero_light" rgba="0.78 0.80 0.83 1" specular="0.35" shininess="0.55" reflectance="0.04"/>
     <material name="nero_dark"  rgba="0.235 0.248 0.275 1" specular="0.30" shininess="0.55"/>
     <material name="nero_white" rgba="0.72 0.735 0.755 1" specular="0.35" shininess="0.60"/>
@@ -190,6 +192,21 @@
     <camera name="arm_front" pos="-0.28 -0.92 1.1" xyaxes="0.9822 -0.1881 0 0.0195 0.1021 0.9946" fovy="42"/>
     <camera name="arm_side" pos="0.62 -0.6 1.18" xyaxes="0.6222 0.7828 0 -0.1392 0.1106 0.9841" fovy="42"/>
     <camera name="top" pos="0.02 0.08 2.1" xyaxes="1 0 0 0 1 0" fovy="52"/>
+
+    <!-- 深度相机（RGB-D）：立柱三脚架 + 848x480 @ fovy58°，固定俯视工作区 -->
+    <camera name="depth_cam" pos="0.57 0.57 1.2" xyaxes="-0.5445 0.8388 0 -0.4255 -0.2762 0.8618" fovy="58"/>
+    <body name="depth_cam_stand" pos="0.57 0.57 0">
+      <geom name="dcam_base" type="cylinder" pos="0 0 0.012" size="0.075 0.012" material="mat_cam" contype="1" conaffinity="7"/>
+      <geom name="dcam_pole" type="cylinder" pos="0 0 0.57" size="0.016 0.57" material="mat_cam" contype="1" conaffinity="7"/>
+      <geom name="dcam_leg0" type="capsule" pos="0.0329 0.019 0.075" quat="0.404508 -0.509037 0.293893 0.700629" size="0.010 0.085" material="mat_cam" contype="1" conaffinity="7"/>
+      <geom name="dcam_leg1" type="capsule" pos="-0.0329 0.019 0.075" quat="-0.404508 -0.509037 -0.293893 0.700629" size="0.010 0.085" material="mat_cam" contype="1" conaffinity="7"/>
+      <geom name="dcam_leg2" type="capsule" pos="0 -0.038 0.075" quat="-0.809017 0 -0.587785 0" size="0.010 0.085" material="mat_cam" contype="1" conaffinity="7"/>
+    </body>
+    <body name="depth_cam_head" pos="0.57 0.57 1.2" quat="0.414307 0.236884 0.436181 0.762877">
+      <geom name="dcam_body" type="box" pos="0 0 0.038" size="0.045 0.065 0.032" material="mat_cam" contype="1" conaffinity="7"/>
+      <geom name="dcam_lens" type="cylinder" pos="0 0 -0.002" quat="0.707107 0.707107 0 0" size="0.018 0.010" material="mat_lens" contype="0" conaffinity="0" group="2"/>
+      <site name="dcam_optical" pos="0 0 0" size="0.010" rgba="1 0 1 1"/>
+    </body>
   </worldbody>
 
   <actuator>

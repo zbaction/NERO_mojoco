@@ -51,6 +51,11 @@ cd ~/NERO
   也是真实碰撞体，方块扔进去会真的撞在壁上、落在底板上。
   篮内用三个 `<site>` 标出红/绿/蓝各自的放置格位（三角形排布，两两间距 120 mm），
   这样三块 80 mm 方块可以**同时**留在篮内而互不干扰。
+- **深度相机**：一台 RGB-D 相机架在三脚架上，站在桌面外侧
+  `(0.57, 0.57)` 的地面上，光心高 1.20 m、俯角约 31°、垂直视场 58°，
+  分辨率 848×480。它是一台**真实的传感器模型**——不是"从场景里读真值"，
+  而是走 MuJoCo 深度渲染 → 反投影 → 点云 → 测出方块中心，
+  三块方块的实测中心误差 1.3–1.9 mm。详见[深度相机](#深度相机rgb-d)一节。
 
 ## 模型数据来源
 
@@ -350,9 +355,102 @@ hover 刹车 2 次、place_hover 刹车 2 次、末态收敛），不是轨迹�
 - 抬起动作是"保持夹紧 + 竖直伺服回 hover"，**不是**转 J2——
   实测转 J2 会让腕部下移 1.1 mm，抓取失败。
 
+## 深度相机（RGB-D）
+
+场景里装了一台深度相机（`depth_cam`），用来做**感知**而不是读真值：
+它走的是和真实 RGB-D 完全一样的链路 —— 渲染深度图 → 用内参反投影成点云 →
+在点云上分割颜色 → 拟合方块中心。抓取位姿仍然来自 IK 离线解，
+但测量精度已经过量化验证，可以拿它做后续的视觉伺服。
+
+### 安装
+
+| 项 | 值 |
+| --- | --- |
+| 相机名 | `depth_cam`（世界坐标固定相机，**不跟夹爪动**） |
+| 光心 | `(0.57, 0.57, 1.20)` m（桌面外侧地面上的三脚架） |
+| 看向 | `(0.00, 0.20, 0.80)`，俯角 30.7° |
+| 分辨率 / 视场 | 848 × 480，纵向 fovy 58°（`fx = fy = 432.97`，`cx = 424`、`cy = 240`） |
+| 深度范围 | 0.05–2.5 m 有效（`map.zfar = 30`，天空盒像素深度是 `stat.extent×zfar = 63`，按上限剔除） |
+
+相机位姿是**网格搜索**出来的（`tools/probe_cam2.py`~`probe_cam11.py`）：
+在"站在桌面外侧"的前提下，要求 ready 姿态下三块方块顶面 + 篮子四角共 7 个工作点
+全部入画且不被机械臂遮挡、19 个关键帧总遮挡最少、方块 ≥32 px、俯角 28–52°。
+247 个可行解里最优的那个总遮挡只有 3 次（都是夹爪自己压住目标方块，属正常遮挡），
+方块 44 px、边距 176 px。
+
+几何上它是一个真的能看见的物体：三脚架（底座 + 立柱 + 3 根斜撑）+ 云台壳体 + 镜头，
+`dcam_lens` 带 `contype=0`（纯视觉），`<site name="dcam_optical">` 标出光心。
+
+### 用法
+
+```bash
+./run.sh depth          # out/depth_camera.png：2×2 拼版
+./run.sh depth --multi  # 额外出 ready / green_hover / green_grasp 三个位姿的深度图
+./run.sh depth-check    # 测量自检，三块方块中心误差 < 6 mm 返回 0
+./run.sh validate       # 全量校验里的第 7 段就是深度相机
+```
+
+`out/depth_camera.png` 是四宫格：
+
+| 区块 | 内容 |
+| --- | --- |
+| 左上 | RGB 视图，叠测量中心十字 + 真实位姿方框（重合即正确） |
+| 左下 | 深度伪彩（0.3–2.4 m，turbo 配色） |
+| 右上 | 俯视散点图：真实点云打底 + 测量中心●/真实中心○ |
+| 右下 | 数值面板：像素数、点数、测得/真实中心、误差 |
+
+### 代码
+
+| 文件 | 说明 |
+| --- | --- |
+| `depth_cam.py` | `DepthCamera`：`capture()` / `pointcloud()` / `unproject()` / `project()` / `intrinsics()` / `pose()` |
+| `depth_view.py` | 测量与自检（`--check` / `--all-poses`），出 `out/depth_rgb.png`、`depth_colormap.png`、`depth_pointcloud.ply` |
+| `depth_show.py` | 出拼版图 `out/depth_camera.png`（`--multi` 加多姿态图） |
+
+### 实测精度（`./run.sh depth-check`）
+
+```
+red    2912 px  2629 点  [0.161 -0.259 0.822]  vs 真实 [0.160 -0.260 0.780]  Δxy 1.3 mm  Δz 1.6 mm
+green  3690 px  3377 点  [0.182  0.000 0.821]  vs 真实 [0.180  0.000 0.780]  Δxy 1.5 mm  Δz 1.3 mm
+blue   4422 px  4134 点  [0.152  0.261 0.821]  vs 真实 [0.150  0.260 0.780]  Δxy 1.9 mm  Δz 1.2 mm
+桌面 132959 点，z 中位数 0.7405 m（真值 0.740），误差 0.5 mm
+```
+
+`Δz` 是"顶面中心 vs 方块几何中心"的差，等于半个边长 40 mm 减去测量点偏移，
+统计上稳定在 1.2–1.6 mm；`Δxy` 才是真正的位置误差，**1.3–1.9 mm**。
+
+### 三个关键实现点
+
+**① 深度图是"沿光轴的 z"，不是欧氏距离**
+`Renderer.enable_depth_rendering()` 返回 z；反投影公式是
+`xc=(u-cx)/fx*z`、`yc=-(v-cy)/fy*z`、`zc=-z`（相机系 +z 朝后，所以取负），
+再 `pw = R @ [xc,yc,zc] + p0`，其中 `R = d.cam_xmat[cid].reshape(3,3)`（列 = 相机 x/y/z 轴）。
+
+**② 背景不是 `nan` 或 `inf`**
+天空盒像素深度恒为 `stat.extent * map.zfar`（本场景 = 63.0），所有像素都是有限值。
+所以剔除背景必须用"深度 > max_depth"，`np.isfinite` 一点用没有。
+改 `stat.extent`、`map.zfar`、开关 skybox **都不影响前景像素**，只影响这个背景常数。
+
+**③ 测中心必须用分位中点，不能用均值**
+立方体朝相机的那两面侧壁会有一条窄带被颜色掩膜选进"顶面点集"，
+用 `mean()` 会带来 **+7 mm 的系统性偏移**（三块方块全往 +x+y 偏）。
+改用 `lo/hi = np.percentile(top[:,:2], [1,99], axis=0)`、`center = 0.5*(lo+hi)`
+（即包围盒中心）后，误差降到 1.3–1.9 mm。选点高度也从 `z_top-0.008` 收紧到 `z_top-0.003`。
+
+### 踩过的坑
+
+- **相机 `<camera>` 必须挂在 `<worldbody>` 下**。一度挂进 `gripper_base` body 里，
+  结果相机跟着夹爪动，渲染出来只剩一片渐变天空（RGB mean 63–67、std 9–10）。
+- **`mujoco.mj_ray()` 是 9 个参数**，`geomid` 必须传 `np.zeros(1, np.int32)`；
+  只传 7 个会 `TypeError: incompatible function arguments`。
+- **`mjtVisFlag` 里没有 `mjVIS_SKYBOX`**，`MjvOption.flags` 长度 31；
+  `mujoco` 也没有 `mj_project`/`mj_unproject` 这类 API。
+- **PIL `ImageDraw.rectangle` 要求 `[x0,y0,x1,y1]` 且 `y1 >= y0`**，
+  直接传两个对角点会 `ValueError: y1 must be greater than or equal to y0`。
+
 ## 验证
 
-`./run.sh validate` 跑 6 段检查，当前全部 PASS：
+`./run.sh validate` 跑 7 段检查，当前全部 PASS：
 
 | 检查 | 结果 |
 | --- | --- |
@@ -361,7 +459,8 @@ hover 刹车 2 次、place_hover 刹车 2 次、末态收敛），不是轨迹�
 | 运动学 | 19 个关键帧（ready + 3 色 × 6）指尖中点和夹持面朝向都精确命中 |
 | 稳定性 | ready 保持 3 s，最大漂移 0.318° |
 | 抓取 | hover → grasp（偏差 3.4 mm）→ 8 个 pad↔cube 接触 → 抬起 **Δz = +0.117 m** |
-| 渲染 | 机械臂在 4 个机位的画面占比 1.56% / 4.76% / 4.52% / 2.05% |
+| 渲染 | 机械臂在 4 个机位的画面占比 1.59% / 4.80% / 4.52% / 2.05% |
+| 深度相机 | 848×480 fovy 58°，有效几何 64.3%，点云桌面高度误差 **0.5 mm**，三块方块中心误差 1.3–1.9 mm |
 
 运动质量另有三个量化检查：
 
@@ -406,13 +505,16 @@ hover 刹车 2 次、place_hover 刹车 2 次、末态收敛），不是轨迹�
 | `solve_poses.py` | 6 残差阻尼最小二乘 IK，写 `poses.json`（19 个关键帧 = ready + 3 色 × 6） |
 | `poses.json` | 19 个关键帧的关节角 |
 | `pick_place.py` | **抓取-放置任务**：3 条连续 C2 轨迹 + 2 次夹爪动作，实时播放；`--cube red\|green\|blue` / `--all` / `--check` / `--viewer` / `--shots` |
-| `validate_nero.py` | 6 段全量校验 |
+| `validate_nero.py` | 7 段全量校验（结构/限位/运动学/稳定性/抓取/渲染/深度相机） |
+| `depth_cam.py` | 深度相机封装：深度渲染、反投影、点云、投影 |
+| `depth_view.py` | 深度测量与自检（`--check` 出 PLY 点云） |
+| `depth_show.py` | 深度相机拼版成果图 |
 | `render_showcase.py` | 成果图（自动取景） |
 | `render_detail.py` | 夹爪抓取特写 |
 | `view_scene.py` | 交互窗口 / `--demo` 演示 / `--check` 自检 |
 | `view.py` | 第一版：只有桌子 + 三色方块 |
 | `check_colors.py` | 校验渲染图里确实有三种不同颜色 |
-| `run.sh` | 一键入口（`pick`/`place`/`pp-shots` 都支持 `red\|green\|blue\|all`） |
+| `run.sh` | 一键入口（`pick`/`place`/`pp-shots` 都支持 `red\|green\|blue\|all`；`depth` 出深度相机图） |
 | `assets/nero/` | STL 网格 + 原始 CSV |
 | `out/` | 渲染结果（含 `pp_<col>_*.png` 三色过程图） |
 | `tools/` | 诊断脚本（FK 交叉验证、抓取/滑移/对齐诊断、篮子筛选等） |
@@ -425,6 +527,7 @@ cd ~/NERO
 /home/zhangb/so101_mujoco/.venv/bin/python build_nero.py    # 重新生成 XML
 /home/zhangb/so101_mujoco/.venv/bin/python validate_nero.py # 校验
 /home/zhangb/so101_mujoco/.venv/bin/python pick_place.py --all --check   # 三色抓放自检
+/home/zhangb/so101_mujoco/.venv/bin/python depth_view.py --check        # 深度相机测量自检
 ```
 
 **顺序很重要**：`solve_poses.py` 从现有 XML 读方块/篮子的真实位姿，`build_nero.py`
@@ -441,6 +544,13 @@ cd ~/NERO
   再增加方块就得换更大的筐或加隔板。
 - 未接入 `pyAgxArm` 真实控制器；执行器是 MuJoCo `position` 类型，
   真实机器人是 MIT 模式（`t_ff` 全关节 ±16 N·m）。
+- 深度相机是**理想深度图**：没有仿真噪声、没有边缘飞点、没有遮挡导致的空洞，
+  也没有红外/结构光在黑色或高光表面的失效。测量精度 1.3–1.9 mm 是几何精度，
+  不代表真机精度。要更真实可以往 `depth_cam.capture()` 里加高斯噪声与量化
+  （真机 RealSense D435 在 0.5 m 处约 ±2 mm 随机误差 + 边缘 1–2 px 飞点）。
+- 深度相机是**固定站位**的（三脚架），不是装在腕部。腕部相机会随夹爪动，
+  带来手眼标定问题；这里刻意选了世界固定的第三人称视角，方便直接对接
+  "在桌面坐标系里给出方块位姿"的下游任务。
 
 ## 排错：`pick all` 搬第二块时，第一块从篮子里消失了
 

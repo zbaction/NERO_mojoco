@@ -63,6 +63,20 @@ BASKET_SLOTS = {"red": (-0.060, -0.080),
 PLACE_Z = TABLE_Z + BASKET_FLOOR + CUBE_HALF
 PLACE_HOVER_DZ = 0.120      # 放置前悬停高度
 
+# --- 深度相机（RGB-D，固定装在桌面右前方的三脚架上）------------------------
+# 选位依据：tools/probe_cam10.py 的网格搜索 + tools/probe_cam11.py 的渲染复核。
+# 约束是「ready 姿态下 7 个工作点全部入画且不被机械臂挡住」，
+# 候选 247 个可行解里挑遮挡最少、方块像素最大的一个。
+#   * 848x480 @ fovy 58° —— 水平视场 88.8°，接近 RealSense D435 的 87°x58°
+#   * 视野覆盖三块方块 + 篮子四角，边距 176 px
+#   * 19 个关键帧里对方块的总遮挡 3 次（都是夹爪自己压在上方，属正常）
+#   * 方块在图上约 44 px（8 cm 方块 / 0.8 m 距离）
+DEPTH_CAM_POS = (0.57, 0.57, 1.20)      # 世界坐标（米），相机光心
+DEPTH_CAM_LOOKAT = (0.00, 0.20, 0.80)   # 光轴看向工作区中心偏后
+DEPTH_CAM_FOVY = 58.0                   # 垂直视场（度）
+DEPTH_CAM_W, DEPTH_CAM_H = 848, 480     # 必须 <= <global offwidth/offheight>
+DEPTH_CAM_POLE_Z = 1.14                 # 三脚架立柱顶端高度（相机装在其上方）
+
 JOINT_LIMIT_DEG = {
     "joint1": (-157.0, 157.0), "joint2": (-102.0, 102.0), "joint3": (-160.0, 160.0),
     "joint4": (-60.0, 125.0), "joint5": (-160.0, 160.0), "joint6": (-44.0, 57.0),
@@ -163,6 +177,94 @@ def camera_xml(name, pos, lookat, fovy):
     up = np.cross(right, fwd)
     return ('    <camera name="%s" pos="%s" xyaxes="%s %s" fovy="%s"/>'
             % (name, vec(p, 3), vec(right, 4), vec(up, 4), f(fovy, 1)))
+
+
+def view_frame(pos, lookat):
+    """返回 (p, right, up, fwd)：与 camera_xml 完全一致的相机正交基。"""
+    p = np.asarray(pos, float)
+    fwd = np.asarray(lookat, float) - p
+    fwd /= np.linalg.norm(fwd)
+    up_w = np.array([0.0, 0.0, 1.0])
+    if abs(float(np.dot(fwd, up_w))) > 0.999:
+        up_w = np.array([0.0, 1.0, 0.0])
+    right = np.cross(fwd, up_w)
+    right /= np.linalg.norm(right)
+    return p, right, np.cross(right, fwd), fwd
+
+
+def mat_to_quat(R):
+    """3x3 旋转矩阵 -> (w, x, y, z)，用 Shepperd 法保证数值稳定。"""
+    m = np.asarray(R, float)
+    tr = m[0, 0] + m[1, 1] + m[2, 2]
+    if tr > 0.0:
+        s = math.sqrt(tr + 1.0) * 2.0
+        w = 0.25 * s
+        x = (m[2, 1] - m[1, 2]) / s
+        y = (m[0, 2] - m[2, 0]) / s
+        z = (m[1, 0] - m[0, 1]) / s
+    elif m[0, 0] > m[1, 1] and m[0, 0] > m[2, 2]:
+        s = math.sqrt(1.0 + m[0, 0] - m[1, 1] - m[2, 2]) * 2.0
+        w = (m[2, 1] - m[1, 2]) / s
+        x = 0.25 * s
+        y = (m[0, 1] + m[1, 0]) / s
+        z = (m[0, 2] + m[2, 0]) / s
+    elif m[1, 1] > m[2, 2]:
+        s = math.sqrt(1.0 + m[1, 1] - m[0, 0] - m[2, 2]) * 2.0
+        w = (m[0, 2] - m[2, 0]) / s
+        x = (m[0, 1] + m[1, 0]) / s
+        y = 0.25 * s
+        z = (m[1, 2] + m[2, 1]) / s
+    else:
+        s = math.sqrt(1.0 + m[2, 2] - m[0, 0] - m[1, 1]) * 2.0
+        w = (m[1, 0] - m[0, 1]) / s
+        x = (m[0, 2] + m[2, 0]) / s
+        y = (m[1, 2] + m[2, 1]) / s
+        z = 0.25 * s
+    return (w, x, y, z)
+
+
+def depth_camera_xml(ind="    "):
+    """深度相机：一个 <camera> + 一根落地三脚架（视觉体）。
+
+    相机单独挂在 worldbody 下（不是挂在夹爪 body 里）——
+    挂在 gripper_base 里会跟着机械臂一起动，渲染出来只剩天空。
+    """
+    p, right, up, fwd = view_frame(DEPTH_CAM_POS, DEPTH_CAM_LOOKAT)
+    # 相机体系：x=right、y=up、z=-fwd（光轴沿 -z，与 MJCF <camera> 约定一致）
+    Rb = np.column_stack([right, up, -fwd])
+    q = mat_to_quat(Rb)
+    pole_xy = (p[0], p[1])
+    pole_h = DEPTH_CAM_POLE_Z
+    L = []
+    L.append(camera_xml("depth_cam", DEPTH_CAM_POS, DEPTH_CAM_LOOKAT, DEPTH_CAM_FOVY).strip("\n"))
+    # 三脚架：底盘 + 三根斜腿 + 立柱（全部静态，不参与机械臂动力学）
+    L.append('%s<body name="depth_cam_stand" pos="%s %s 0">'
+             % (ind, f(pole_xy[0], 4), f(pole_xy[1], 4)))
+    L.append('%s  <geom name="dcam_base" type="cylinder" pos="0 0 0.012" size="0.075 0.012" '
+             'material="mat_cam" contype="1" conaffinity="7"/>' % ind)
+    L.append('%s  <geom name="dcam_pole" type="cylinder" pos="0 0 %s" size="0.016 %s" '
+             'material="mat_cam" contype="1" conaffinity="7"/>'
+             % (ind, f(pole_h / 2, 4), f(pole_h / 2, 4)))
+    for k in range(3):
+        a = math.radians(120.0 * k + 30.0)
+        L.append('%s  <geom name="dcam_leg%d" type="capsule" pos="%s %s 0.075" '
+                 'quat="%s" size="0.010 0.085" material="mat_cam" '
+                 'contype="1" conaffinity="7"/>'
+                 % (ind, k, f(0.038 * math.cos(a), 4), f(0.038 * math.sin(a), 4),
+                    vec(rpy_to_quat(0.0, math.radians(72.0), a + math.pi / 2))))
+    L.append('%s</body>' % ind)
+    # 相机壳体：整体在光心"后方"，不遮挡自己的视野
+    L.append('%s<body name="depth_cam_head" pos="%s" quat="%s">'
+             % (ind, vec(p, 4), vec(q, 6)))
+    L.append('%s  <geom name="dcam_body" type="box" pos="0 0 0.038" size="0.045 0.065 0.032" '
+             'material="mat_cam" contype="1" conaffinity="7"/>' % ind)
+    L.append('%s  <geom name="dcam_lens" type="cylinder" pos="0 0 -0.002" quat="%s" '
+             'size="0.018 0.010" material="mat_lens" contype="0" conaffinity="0" group="2"/>'
+             % (ind, vec(rpy_to_quat(math.pi / 2, 0.0, 0.0), 6)))
+    L.append('%s  <site name="dcam_optical" pos="0 0 0" size="0.010" rgba="1 0 1 1"/>' % ind)
+    L.append('%s</body>' % ind)
+    return "\n".join(L)
+
 
 
 def parse_urdf(path):
@@ -556,6 +658,8 @@ def main():
     <material name="mat_green" rgba="0.12 0.68 0.26 1" specular="0.3" shininess="0.6"/>
     <material name="mat_blue"  rgba="0.16 0.34 0.86 1" specular="0.3" shininess="0.6"/>
     <material name="mat_basket" rgba="0.55 0.40 0.22 1" specular="0.15" shininess="0.2"/>
+    <material name="mat_cam"   rgba="0.18 0.19 0.21 1" specular="0.30" shininess="0.5"/>
+    <material name="mat_lens"  rgba="0.06 0.10 0.16 1" specular="0.85" shininess="0.95"/>
 """ + mats + "\n" + meshes + """
   </asset>
 
@@ -592,6 +696,9 @@ def main():
 """ + camera_xml("arm_front", (-0.28, -0.92, 1.10), (-0.10, 0.02, 1.00), 42) + """
 """ + camera_xml("arm_side", (0.62, -0.60, 1.18), (-0.16, 0.02, 1.00), 42) + """
 """ + camera_xml("top", (0.02, 0.08, 2.10), (0.02, 0.08, 0.80), 52) + """
+
+    <!-- 深度相机（RGB-D）：立柱三脚架 + 848x480 @ fovy58°，固定俯视工作区 -->
+""" + depth_camera_xml("    ") + """
   </worldbody>
 
   <actuator>
