@@ -12,6 +12,7 @@
     <quality shadowsize="4096"/>
     <rgba haze="0.20 0.22 0.25 1"/>
   </visual>
+  <statistic center="0.00 0.00 0.80" extent="2.10"/>
 
   <asset>
     <texture name="sky" type="skybox" builtin="gradient"

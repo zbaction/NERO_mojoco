@@ -49,6 +49,39 @@ def demo(m, d, qad, viewer=None):
     drive(m, d, qad, "hover", GRIP_CLOSE, 2.5, viewer)
 
 
+def arm_bounds(m, d):
+    """机械臂（geomgroup 2）所有网格顶点的世界包围盒。"""
+    pts = []
+    for g in range(m.ngeom):
+        if m.geom_group[g] != 2 or m.geom_type[g] != mujoco.mjtGeom.mjGEOM_MESH:
+            continue
+        mid = m.geom_dataid[g]
+        a, n = m.mesh_vertadr[mid], m.mesh_vertnum[mid]
+        R = d.geom_xmat[g].reshape(3, 3)
+        pts.append(m.mesh_vert[a:a + n] @ R.T + d.geom_xpos[g])
+    P = np.vstack(pts)
+    return P.min(0), P.max(0)
+
+
+def frame_camera(v, m, d, az=55.0, el=-18.0, pad=1.15):
+    """把交互窗口相机对准机械臂。
+
+    MuJoCo 的默认 free 相机 lookat 在世界原点 (0,0,0)、dist=2，
+    而桌子台面在 z=0.74 —— 机械臂 96.7% 的顶点会被顶出画面上边缘，
+    看起来就像"只显示了一部分机械臂"。这里按实际包围盒重新取景。
+    """
+    lo, hi = arm_bounds(m, d)
+    c = (lo + hi) / 2.0
+    span = float(np.linalg.norm(hi - lo))
+    v.cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+    v.cam.lookat[:] = c
+    v.cam.distance = pad * span / (2.0 * np.tan(np.radians(m.vis.global_.fovy) / 2))
+    v.cam.azimuth = az
+    v.cam.elevation = el
+    v.sync()
+    return c, span
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--demo", action="store_true", help="先自动演示一遍抓取")
@@ -81,6 +114,8 @@ def main() -> int:
         return 0 if d.xpos[green][2] > 0.85 else 1
 
     with mujoco.viewer.launch_passive(m, d) as v:
+        c, span = frame_camera(v, m, d)
+        print("相机对准机械臂中心 %s（对角 %.2f m）" % (np.round(c, 3), span))
         if a.demo:
             demo(m, d, qad, v)
         while v.is_running():

@@ -407,6 +407,13 @@ def main():
     <rgba haze="0.20 0.22 0.25 1"/>
   </visual>"""
 
+    # <statistic> 决定 MuJoCo 默认 free 相机的取景中心与距离。
+    # 不写的话默认 center=(0,0,0)、extent=2 —— 视线落在世界原点（地面），
+    # 桌面上的机械臂会被顶出画面上边缘（实测 96.7% 顶点出画），
+    # 交互窗口里看起来就像"只显示了一部分机械臂"。
+    stat_arm = ('  <statistic center="0 0 0.42" extent="1.10"/>')
+    stat_scene = ('  <statistic center="0.00 0.00 0.80" extent="2.10"/>')
+
     poses = load_poses()
     kf_names = [k for k in ("ready", "hover", "grasp", "grasp_red", "grasp_blue")
                 if k in poses]
@@ -420,7 +427,7 @@ def main():
     # ---------------- 1) 独立机械臂模型（基座原点，朝 +z）------------------
     ARM_OUT.write_text("""<mujoco model="agilex_nero_arm">
   <!-- 由 build_nero.py 从 AgileX 官方 URDF + CSV 自动生成，勿手改 -->
-""" + common_head + """
+""" + common_head + "\n" + stat_arm + """
 
   <asset>
 """ + mats + "\n" + meshes + """
@@ -467,7 +474,7 @@ def main():
     SCENE_OUT.write_text("""<mujoco model="nero_desk_scene">
   <!-- 桌面场景：AgileX NERO 七自由度机械臂 + 桌面三个彩色方块
        由 build_nero.py 生成；机械臂基座固定在桌面上表面 (z=0.74) -->
-""" + common_head + """
+""" + common_head + "\n" + stat_scene + """
 
   <asset>
     <texture name="sky" type="skybox" builtin="gradient"

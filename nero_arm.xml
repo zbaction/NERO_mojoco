@@ -11,6 +11,7 @@
     <quality shadowsize="4096"/>
     <rgba haze="0.20 0.22 0.25 1"/>
   </visual>
+  <statistic center="0 0 0.42" extent="1.10"/>
 
   <asset>
     <material name="nero_light" rgba="0.78 0.80 0.83 1" specular="0.35" shininess="0.55" reflectance="0.04"/>

@@ -168,3 +168,31 @@ cd ~/NERO
 - 桌面没有建摩擦参数调优，方块静置稳定但快速拖动会滑。
 - 未接入 `pyAgxArm` 真实控制器；执行器是 MuJoCo `position` 类型，
   真实机器人是 MIT 模式（`t_ff` 全关节 ±16 N·m）。
+
+## 排错：交互窗口里"只显示一部分机械臂"
+
+**现象**：`./run.sh` 打开窗口后只看到底座或一小段连杆。
+
+**原因**：MuJoCo `launch_passive` 的 free 相机初值是硬编码的
+`lookat=(0,0,0)`、`distance=2.0`、`azimuth=90`、`elevation=-45`，
+视线指向世界原点——也就是地面。而机械臂装在桌面 z=0.74 上，
+整臂顶端在 z≈1.25，实测 **96.7% 的网格顶点被顶出画面上边缘**。
+
+注意：在 XML 里写 `<statistic center=... extent=.../>` **不能**修正这个行为
+（实测 `m.stat.center` 变了，但 viewer 相机仍从 `(0,0,0)` 起步）。
+
+**修法**：`view_scene.py` 的 `frame_camera()` 在 `launch_passive` 之后
+按机械臂实际包围盒重设 `v.cam.lookat / distance / azimuth / elevation`。
+实测采样点入画比例 **3.3% → 100%**。
+
+```python
+lo, hi = arm_bounds(m, d)                       # geomgroup 2 的网格顶点
+c = (lo + hi) / 2.0
+span = np.linalg.norm(hi - lo)
+v.cam.lookat[:] = c
+v.cam.distance = 1.15 * span / (2 * np.tan(np.radians(fovy) / 2))
+v.cam.azimuth, v.cam.elevation = 55.0, -18.0
+```
+
+在窗口里随时可以用鼠标自由旋转；`Tab` 切场景预设相机（`overview` /
+`arm_front` / `arm_side` / `top`），这四个机位的取景本来就是对的。
