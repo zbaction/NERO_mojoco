@@ -92,7 +92,7 @@ def main():
     print("\n[3] 运动学与工作空间")
     qad = [m.jnt_qposadr[jid(m, n)] for n in ARM]
     mujoco.mj_forward(m, d)
-    for name in ("ready", "hover", "grasp", "grasp_red", "grasp_blue"):
+    for name in ("ready", "red_grasp", "green_grasp", "blue_grasp"):
         if m.nkey and any(m.key(i).name == name for i in range(m.nkey)):
             k = m.key(name)
             d.qpos[:] = k.qpos
@@ -158,10 +158,10 @@ def main():
             mujoco.mj_step(m, d)
         return d.xpos[green].copy()
 
-    goto("hover", GRIP_OPEN, 2.0)
+    goto("green_hover", GRIP_OPEN, 2.0)
     p_hover = pad_mid().copy()
     print("       hover 指尖中点 [%.3f %.3f %.3f]" % tuple(p_hover))
-    goto("grasp", GRIP_OPEN, 2.5)
+    goto("green_grasp", GRIP_OPEN, 2.5)
     p_grasp = pad_mid().copy()
     print("       grasp 指尖中点 [%.3f %.3f %.3f]（方块中心 [%.3f %.3f %.3f]）"
           % (*p_grasp, *p_before))
@@ -169,7 +169,7 @@ def main():
           "指尖对准方块中心（偏差 %.1f mm）" % (1000 * np.linalg.norm(p_grasp - p_before)))
 
     n_before = d.ncon
-    p_closed = goto("grasp", GRIP_CLOSE, 2.0)
+    p_closed = goto("green_grasp", GRIP_CLOSE, 2.0)
     con = []
     for i in range(d.ncon):
         c = d.contact[i]
@@ -182,7 +182,7 @@ def main():
 
     # 抬起：保持夹紧，把机械臂竖直提回 hover（+0.12 m）。
     # 注意抬 joint2 会让腕部下移，反而不动方块，所以用反向的 hover 位姿。
-    q_lift = np.array([m.key("hover").qpos[a] for a in qad])
+    q_lift = np.array([m.key("green_hover").qpos[a] for a in qad])
     d.ctrl[:7] = q_lift
     d.ctrl[7] = d.ctrl[8] = GRIP_CLOSE
     for _ in range(int(2.5 / m.opt.timestep)):

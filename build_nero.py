@@ -465,9 +465,13 @@ def main():
     stat_scene = ('  <statistic center="0.00 0.00 0.80" extent="2.10"/>')
 
     poses = load_poses()
-    kf_names = [k for k in ("ready", "hover", "grasp", "grasp_red", "grasp_blue",
-                            "lift", "transit", "place_hover", "place")
-                if k in poses]
+    # 关键帧顺序：ready 在前，然后按颜色分组（red_/green_/blue_ 前缀）。
+    # 每个颜色一套完整链条，运行时可整体切换抓哪一块。
+    order = ["ready"]
+    for col in ("red", "green", "blue"):
+        for ph in ("hover", "grasp", "lift", "transit", "place_hover", "place"):
+            order.append("%s_%s" % (col, ph))
+    kf_names = [k for k in order if k in poses]
     # 每个关键帧都写全 qpos（7 关节 + 2 指）。所有位姿指尖都保持张开（GRIP_OPEN，
     # 开度 100 mm），闭合由仿真脚本把 ctrl 拉到 GRIP_CLOSE 完成。
     kf_xml = "\n".join(

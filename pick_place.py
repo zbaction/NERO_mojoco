@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""NERO 抓取-放置任务：把绿方块从桌面搬进收纳篮。
+"""NERO 抓取-放置任务：把指定颜色的方块从桌面搬进收纳篮。
 
-任务序列（每个阶段都伺服到 poses.json 里的关键帧）
-    ready → hover → grasp → [闭合] → lift → transit → place_hover → place
-          → [张开] → place_hover → transit → ready
+任务序列（每个阶段都伺服到 poses.json 里对应的关键帧）
+    ready → <col>_hover → <col>_grasp → [闭合] → <col>_lift
+          → <col>_transit → <col>_place_hover → <col>_place
+          → [张开] → <col>_place_hover → <col>_transit → ready
 
 用法：
-    python3 pick_place.py            # 无窗执行 + 打印每阶段状态 + 出图
-    python3 pick_place.py --viewer   # 带交互窗口
-    python3 pick_place.py --check    # 只判定成功与否（退出码 0/1）
+    python3 pick_place.py                  # 抓绿方块（默认）
+    python3 pick_place.py --cube red       # 抓红方块
+    python3 pick_place.py --cube blue      # 抓蓝方块
+    python3 pick_place.py --cube green --viewer   # 带交互窗口
+    python3 pick_place.py --cube red --check      # 只判定成功与否（退出码 0/1）
+    python3 pick_place.py --all            # 依次把三块都搬进篮子
 """
 from __future__ import annotations
 
@@ -29,20 +33,30 @@ OUT.mkdir(exist_ok=True)
 ARM = ["joint%d" % i for i in range(1, 8)]
 GRIP_OPEN, GRIP_CLOSE = 0.050, 0.0
 
-# 阶段表：(关键帧, 夹爪 ctrl, 时长 s, 说明)
-PHASES = [
-    ("hover",       GRIP_OPEN,  2.0, "移到绿方块正上方"),
-    ("grasp",       GRIP_OPEN,  2.5, "下降到方块中心"),
-    ("grasp",       GRIP_CLOSE, 1.5, "闭合夹爪"),
-    ("lift",        GRIP_CLOSE, 2.0, "竖直提起 150 mm"),
-    ("transit",     GRIP_CLOSE, 2.5, "平移到篮子上方"),
-    ("place_hover", GRIP_CLOSE, 2.5, "到篮子正上方 120 mm"),
-    ("place",       GRIP_CLOSE, 2.5, "下降把方块放进篮子"),
-    ("place",       GRIP_OPEN,  1.5, "张开夹爪释放"),
-    ("place_hover", GRIP_OPEN,  2.0, "退出篮子"),
-    ("transit",     GRIP_OPEN,  2.0, "往回走"),
-    ("ready",       GRIP_OPEN,  2.5, "回到待命姿态"),
-]
+COLORS = ("red", "green", "blue")
+CUBE_OF = {"red": "cube_red", "green": "cube_green", "blue": "cube_blue"}
+LABEL = {"red": "红方块", "green": "绿方块", "blue": "蓝方块"}
+
+
+def phases_for(col):
+    """某颜色的 11 段动作表：(关键帧, 夹爪 ctrl, 时长 s, 说明)。"""
+    name = LABEL[col]
+    return [
+        ("%s_hover" % col,       GRIP_OPEN,  2.0, "移到%s正上方" % name),
+        ("%s_grasp" % col,       GRIP_OPEN,  2.5, "下降到%s中心" % name),
+        ("%s_grasp" % col,       GRIP_CLOSE, 1.5, "闭合夹爪"),
+        ("%s_lift" % col,        GRIP_CLOSE, 2.0, "竖直提起 150 mm"),
+        ("%s_transit" % col,     GRIP_CLOSE, 2.5, "平移到篮子上方"),
+        ("%s_place_hover" % col, GRIP_CLOSE, 2.5, "到篮子正上方 120 mm"),
+        ("%s_place" % col,       GRIP_CLOSE, 2.5, "下降把%s放进篮子" % name),
+        ("%s_place" % col,       GRIP_OPEN,  1.5, "张开夹爪释放"),
+        ("%s_place_hover" % col, GRIP_OPEN,  2.0, "退出篮子"),
+        ("%s_transit" % col,     GRIP_OPEN,  2.0, "往回走"),
+        ("ready",                GRIP_OPEN,  2.5, "回到待命姿态"),
+    ]
+
+
+PHASES = phases_for("green")   # 兼容旧代码 / 诊断脚本
 
 
 def load():
@@ -119,7 +133,7 @@ def basket_box(m, d):
     return (cx, cy), floor_top, inner
 
 
-def cube_in_basket(m, d, cube="cube_green"):
+def cube_in_basket(m, d, cube):
     """判定方块是否稳稳落在篮子内腔里。"""
     (bx, by), floor_top, inner = basket_box(m, d)
     b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, cube)
@@ -132,37 +146,38 @@ def cube_in_basket(m, d, cube="cube_green"):
     return ok_xy and ok_z and upright, p, (bx, by), floor_top, inner
 
 
-def run(m, d, qad, viewer=None, verbose=True):
+def run(m, d, qad, col="green", viewer=None, verbose=True):
     reset(m, d, qad)
-    green = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "cube_green")
-    p0 = d.xpos[green].copy()
+    cube = CUBE_OF[col]
+    bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, cube)
+    p0 = d.xpos[bid].copy()
     (bx, by), floor_top, inner = basket_box(m, d)
     if verbose:
-        print("任务：把绿方块 [%.3f %.3f %.3f] 搬进篮子 [%.3f %.3f]（内腔 %.0f mm）"
-              % (*p0, bx, by, 2000 * inner))
+        print("任务：把%s [%.3f %.3f %.3f] 搬进篮子 [%.3f %.3f]（内腔 %.0f mm）"
+              % (LABEL[col], *p0, bx, by, 2000 * inner))
         print()
         print("%-6s %-26s %-26s %s" % ("阶段", "方块位置", "指尖中点", "说明"))
-    for i, (key, grip, secs, note) in enumerate(PHASES):
+    for i, (key, grip, secs, note) in enumerate(phases_for(col)):
         move(m, d, qad, key, grip, secs, viewer)
-        p = d.xpos[green].copy()
+        p = d.xpos[bid].copy()
         pm = pad_mid(m, d)
         if verbose:
             print("%-6d [%.3f %.3f %.3f]        [%.3f %.3f %.3f]      %s"
                   % (i + 1, *p, *pm, note))
-    ok, p, bc, ft, inner = cube_in_basket(m, d)
+    ok, p, bc, ft, inner = cube_in_basket(m, d, cube)
     if verbose:
         print()
-        print("最终：绿方块 [%.3f %.3f %.3f]" % tuple(p))
+        print("最终：%s [%.3f %.3f %.3f]" % (LABEL[col], *p))
         print("      篮子中心 (%.3f, %.3f)  底板顶面 z=%.3f  内半宽 %.3f"
               % (bc[0], bc[1], ft, inner))
         print("      偏离中心 %.1f mm，底面高差 %.1f mm"
               % (1000 * math.hypot(p[0] - bc[0], p[1] - bc[1]),
                  1000 * abs(p[2] - (ft + 0.040))))
-        print("结果：%s" % ("成功，方块在篮子内" if ok else "失败"))
+        print("结果：%s" % ("成功，%s在篮子内" % LABEL[col] if ok else "失败"))
     return ok
 
 
-def shoot(m, d, qad, name, look, dist, az, el, fovy=42, w=1280, h=720):
+def shoot(m, d, name, look, dist, az, el, fovy=42, w=1280, h=720):
     r = mujoco.Renderer(m, h, w)
     m.vis.global_.fovy = fovy
     cam = mujoco.MjvCamera()
@@ -177,21 +192,62 @@ def shoot(m, d, qad, name, look, dist, az, el, fovy=42, w=1280, h=720):
     return name
 
 
+def shots(m, d, qad, col):
+    reset(m, d, qad)
+    cube = CUBE_OF[col]
+    bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, cube)
+    # 图名带颜色前缀，否则三种颜色会互相覆盖
+    marks = {"%s_grasp" % col: ("pp_%s_1_grasped" % col, (0.08, 0.02, 0.92), 0.95, 55, -14),
+             "%s_lift" % col: ("pp_%s_2_lifted" % col, (0.04, 0.06, 1.00), 1.05, 55, -14),
+             "%s_transit" % col: ("pp_%s_3_transit" % col, (-0.00, 0.22, 1.00), 1.10, 55, -16),
+             "%s_place_hover" % col: ("pp_%s_4_above_basket" % col, (-0.02, 0.32, 0.95), 0.95, 62, -18),
+             # 篮子侧壁 90 mm 高、方块 80 mm 高 —— 低机位会被完全遮住，
+             # 必须用俯视（el=-52）+ 近距离才能看到方块躺在篮底
+             "%s_place" % col: ("pp_%s_5_placed" % col, (-0.04, 0.42, 0.80), 0.62, 62, -52)}
+    shot = set()
+    for i, (key, grip, secs, note) in enumerate(phases_for(col)):
+        move(m, d, qad, key, grip, secs)
+        if key in marks and key not in shot:
+            nm, look, dist, az, el = marks[key]
+            shoot(m, d, nm, look, dist, az, el)
+            shot.add(key)
+            print("  写出 out/%s.png   %s z=%.4f"
+                  % (nm, LABEL[col], d.xpos[bid][2]))
+    # 收尾全景 + 篮子俯视特写
+    shoot(m, d, "pp_%s_6_done" % col, (-0.06, 0.20, 0.88), 1.15, 60, -30)
+    shoot(m, d, "pp_%s_7_basket_top" % col, (-0.04, 0.42, 0.80), 0.50, 62, -68)
+    print("  写出 out/pp_%s_6_done.png / pp_%s_7_basket_top.png" % (col, col))
+    ok, p, bc, ft, inner = cube_in_basket(m, d, cube)
+    print()
+    print("最终：%s [%.3f %.3f %.3f]" % (LABEL[col], *p))
+    print("      偏离篮心 %.1f mm  底面高差 %.1f mm"
+          % (1000 * math.hypot(p[0] - bc[0], p[1] - bc[1]),
+             1000 * abs(p[2] - (ft + 0.040))))
+    print("结果：%s" % ("成功，%s在篮子内" % LABEL[col] if ok else "失败"))
+    return ok
+
+
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description="NERO 抓取-放置：把指定颜色的方块搬进篮子")
+    ap.add_argument("--cube", choices=COLORS, default="green",
+                    help="要抓的方块颜色（默认 green）")
+    ap.add_argument("--all", action="store_true", help="依次搬红、绿、蓝三块")
     ap.add_argument("--viewer", action="store_true")
-    ap.add_argument("--check", action="store_true")
-    ap.add_argument("--shots", action="store_true", help="额外出 4 张过程图")
+    ap.add_argument("--check", action="store_true", help="只判定成功与否")
+    ap.add_argument("--shots", action="store_true", help="出过程图到 out/")
     a = ap.parse_args()
 
     m, d, qad = load()
+
     if a.viewer:
         import mujoco.viewer as _viewer
         import view_scene as vs
+        cols = list(COLORS) if a.all else [a.cube]
         with _viewer.launch_passive(m, d) as v:
-            reset(m, d, qad)
             vs.frame_camera(v, m, d, az=60, el=-20)
-            ok = run(m, d, qad, viewer=v)
+            ok = True
+            for col in cols:
+                ok = run(m, d, qad, col, viewer=v) and ok
             print("窗口保持中，关闭窗口退出…")
             while v.is_running():
                 mujoco.mj_step(m, d)
@@ -200,53 +256,36 @@ def main():
         return 0 if ok else 1
 
     if a.shots:
-        # 分阶段截图：完整跑一遍，在每个关键阶段后拍一张
-        reset(m, d, qad)
-        marks = {"grasp": ("pp_1_grasped", (0.08, 0.02, 0.92), 0.95, 55, -14),
-                 "lift": ("pp_2_lifted", (0.04, 0.06, 1.00), 1.05, 55, -14),
-                 "transit": ("pp_3_transit", (-0.00, 0.22, 1.00), 1.10, 55, -16),
-                 "place_hover": ("pp_4_above_basket", (-0.02, 0.32, 0.95), 0.95, 62, -18),
-                 # 篮子侧壁 90 mm 高、方块 80 mm 高 —— 低机位会被完全遮住，
-                 # 必须用俯视（el=-52）+ 近距离才能看到方块躺在篮底
-                 "place": ("pp_5_placed", (-0.04, 0.42, 0.80), 0.62, 62, -52),
-                 # 收尾全景：抬高俯角才能同时看到整臂回位 + 篮底的方块
-                 "ready": ("pp_6_done", (-0.06, 0.20, 0.88), 1.15, 60, -30)}
-        shot = set()
-        green = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "cube_green")
-        for i, (key, grip, secs, note) in enumerate(PHASES):
-            move(m, d, qad, key, grip, secs)
-            if key in marks and key not in shot:
-                nm, look, dist, az, el = marks[key]
-                shoot(m, d, qad, nm, look, dist, az, el)
-                shot.add(key)
-                print("  写出 out/%s.png   方块 z=%.4f" % (nm, d.xpos[green][2]))
-        # 额外：篮子俯视特写（此时夹爪已张开退出）
-        shoot(m, d, qad, "pp_7_basket_top", (-0.04, 0.42, 0.80), 0.50, 62, -68)
-        print("  写出 out/pp_7_basket_top.png")
-        ok, p, bc, ft, inner = cube_in_basket(m, d)
-        print()
-        print("最终：绿方块 [%.3f %.3f %.3f]" % tuple(p))
-        print("      偏离篮心 %.1f mm  底面高差 %.1f mm"
-              % (1000 * math.hypot(p[0] - bc[0], p[1] - bc[1]),
-                 1000 * abs(p[2] - (ft + 0.040))))
-        print("结果：%s" % ("成功，方块在篮子内" if ok else "失败"))
+        cols = list(COLORS) if a.all else [a.cube]
+        ok = True
+        for col in cols:
+            ok = shots(m, d, qad, col) and ok
         return 0 if ok else 1
 
     if a.check:
-        run(m, d, qad, verbose=False)
-        ok, p, bc, ft, inner = cube_in_basket(m, d)
-        dxy = math.hypot(p[0] - bc[0], p[1] - bc[1])
-        dz = abs(p[2] - (ft + 0.040))
-        print("抓取-放置自检")
-        print("  绿方块落点 [%.3f %.3f %.3f]" % tuple(p))
-        print("  篮子中心 (%.3f, %.3f) 内半宽 %.3f" % (bc[0], bc[1], inner))
-        print("  偏离篮心 %.1f mm（限 %.1f）" % (1000 * dxy, 1000 * (inner - 0.040)))
-        print("  底面高差 %.1f mm（限 12.0）" % (1000 * dz))
-        print("  结果：%s" % ("PASS" if ok else "FAIL"))
+        cols = list(COLORS) if a.all else [a.cube]
+        allok = True
+        for col in cols:
+            run(m, d, qad, col, verbose=False)
+            ok, p, bc, ft, inner = cube_in_basket(m, d, CUBE_OF[col])
+            dxy = math.hypot(p[0] - bc[0], p[1] - bc[1])
+            dz = abs(p[2] - (ft + 0.040))
+            allok = allok and ok
+            print("%-6s %s 落点 [%.3f %.3f %.3f]  偏离篮心 %.1f mm（限 %.1f）"
+                  "  高差 %.1f mm（限 12.0）  -> %s"
+                  % (col, LABEL[col], *p, 1000 * dxy, 1000 * (inner - 0.040),
+                     1000 * dz, "PASS" if ok else "FAIL"))
+        print("总结果：%s" % ("PASS" if allok else "FAIL"))
+        return 0 if allok else 1
+
+    if a.all:
+        ok = True
+        for col in COLORS:
+            ok = run(m, d, qad, col, verbose=True) and ok
+            print()
         return 0 if ok else 1
 
-    ok = run(m, d, qad, verbose=True)
-    return 0 if ok else 1
+    return 0 if run(m, d, qad, a.cube, verbose=True) else 1
 
 
 if __name__ == "__main__":

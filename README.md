@@ -121,11 +121,11 @@ cd ~/NERO
 
 ## 抓取-放置任务（`pick_place.py`）
 
-把绿方块 `(0.18, 0, 0.78)` 夹起来搬进篮子 `(-0.04, 0.42)`。11 段动作：
+把指定颜色的方块夹起来搬进篮子 `(-0.04, 0.42)`。11 段动作：
 
 | # | 关键帧 | 夹爪 | 动作 |
 | --- | --- | --- | --- |
-| 1 | hover | 张开 | 移到绿方块正上方 |
+| 1 | hover | 张开 | 移到目标方块正上方 |
 | 2 | grasp | 张开 | 下降到方块中心 |
 | 3 | grasp | **闭合** | 两指夹紧（4 个 pad↔cube 接触） |
 | 4 | lift | 闭合 | 竖直提起 150 mm |
@@ -146,6 +146,65 @@ cd ~/NERO
 底面高差 0.0 mm（限 12.0）
 结果：PASS
 ```
+
+### 抓不同颜色：`--cube red|green|blue`
+
+三块方块各有一条独立的关键帧链，键名带颜色前缀（`red_hover`、`blue_grasp` …），
+所以同一个场景里三套动作互不干扰：
+
+```bash
+./run.sh pick --cube red        # 交互窗口演示搬红块
+./run.sh pick --cube blue       # 交互窗口演示搬蓝块
+python3 pick_place.py --cube red --check      # 无窗口自检
+python3 pick_place.py --all --check           # 依次搬红、绿、蓝，全部判定
+python3 pick_place.py --all --shots           # 出 21 张三色过程图
+```
+
+实测三色全部 PASS：
+
+| 方块 | 偏航 | 抓取余量 | 落点 | 偏离篮心 |
+| --- | --- | --- | --- | --- |
+| 红 `cube_red` | +12° | 9.9° | `[-0.038 0.436 0.788]` | 16.1 mm |
+| 绿 `cube_green` | −8° | 19.4° | `[-0.039 0.418 0.788]` | 2.1 mm |
+| 蓝 `cube_blue` | +20° | 17.8° | `[-0.039 0.419 0.788]` | 1.3 mm |
+
+`poses.json` 共 19 个位姿 = `ready` + 3 色 × 6 个关键帧，全部 `pos_err=0.00 mm`、
+`tilt=0.00°`、夹持面偏航误差 `0.00°`。
+
+#### 踩过的坑一：IK 分支必须锚定 ready
+
+给三色解 IK 时如果每个都从 `q_ref=None` 随机起解，红/蓝会解到 joint5 为正的
+**另一个分支**（手臂绕到身后），关节空间要扫 146°，动力学跟不过去：
+`blue` 从 `blue_hover`（joint5=+141°）到 `blue_grasp`（joint5=−5°），实测指尖偏 72 mm。
+
+修法：`solve_task(cube, q_ref=q_ready)`，且链内递进锚定（每解完一个位姿就用它
+当下一段的 `q_ref`）；`solve()` 的参考姿态惩罚权重从 0.25 提到 **2.0**。
+修好后三色链的 joint5 都在 −27°…+5° 区间，不再翻分支。
+
+#### 踩过的坑二：夹爪偏航方向反了（最关键）
+
+`yaw_rad()` 用 `atan2(padl.x−padr.x, padl.y−padr.y)` 量的是"从 +y 转向 +x"的
+**顺时针**角；而 `cube_pose()` 的 `yaw_c` 用 `atan2(R[1,0], R[0,0])` 是**逆时针**角。
+早期直接传 `yaw_tgt=yaw_c`，夹爪就朝反方向转，两指连线与方块面法向的夹角变成
+**2×偏航角**：
+
+| 方块 | 偏航 | 夹角 | 沿夹持方向投影宽 | 夹爪开度 |
+| --- | --- | --- | --- | --- |
+| 红 | +12° | 24° | 105.6 mm | 100 mm |
+| 绿 | −8° | 16° | 99.0 mm | 100 mm |
+| 蓝 | +20° | 40° | **112.7 mm** | 100 mm |
+
+蓝块投影宽 112.7 mm > 100 mm 开度，下降时指尖必然顶到方块上棱角，
+joint2 力矩饱和到 −24 Nm，指尖卡在 z=0.834（方块顶面 0.819）再也下不去。
+红块 105.6 mm 也超了，只是偏得少、勉强擦过去。
+
+修法：`yaw_tgt = -yaw_c`。修好后三色"两指连线 vs 方块局部 y 轴"夹角全部
+**0.0°**（`tools/diag_align.py` 可直接复验）。
+
+#### 顺带纠正：`grasp` 阶段的夹爪开度不是越小越好
+
+把 `GRIP_OPEN` 从 0.050 提到 0.055（110 mm）对红/绿毫无影响，对蓝块也只是
+从"卡死"变成"擦着下去"——真正的问题是偏航没对齐，不是开度不够。
 
 ### 平滑轨迹：为什么不能用阶跃 ctrl
 
@@ -186,19 +245,23 @@ cd ~/NERO
 | 渲染 | 机械臂在 4 个机位的画面占比 1.54% / 4.66% / 4.48% / 2.07% |
 
 抓取-放置另有独立自检 `./run.sh place`（方块落进篮子返回 0），
-以及 7 张过程图 `./run.sh pp-shots`：
+以及 21 张过程图 `./run.sh pp-shots all`（三种颜色各 7 张，带颜色前缀避免覆盖）：
 
 | 图 | 内容 |
 | --- | --- |
-| `pp_1_grasped.png` | 夹爪闭合并夹住绿方块 |
-| `pp_2_lifted.png` | 竖直提起 150 mm |
-| `pp_3_transit.png` | 横移到篮子上方途中 |
-| `pp_4_above_basket.png` | 悬停在篮子正上方 120 mm |
-| `pp_5_placed.png` | 放进篮子（俯视，越过 90 mm 侧壁） |
-| `pp_6_done.png` | 机械臂回到 ready，方块留在篮内 |
-| `pp_7_basket_top.png` | 篮子俯视特写，方块躺在篮底正中 |
+| `pp_<col>_1_grasped.png` | 夹爪闭合并夹住方块 |
+| `pp_<col>_2_lifted.png` | 竖直提起 150 mm |
+| `pp_<col>_3_transit.png` | 横移到篮子上方途中 |
+| `pp_<col>_4_above_basket.png` | 悬停在篮子正上方 120 mm |
+| `pp_<col>_5_placed.png` | 放进篮子（俯视，越过 90 mm 侧壁） |
+| `pp_<col>_6_done.png` | 机械臂回到 ready，方块留在篮内 |
+| `pp_<col>_7_basket_top.png` | 篮子俯视特写，方块躺在篮底正中 |
 
-判定不靠肉眼：像素占比用"关掉 geomgroup[2] 前后两次渲染差分"客观测量。
+其中 `<col>` ∈ `red` / `green` / `blue`。只出单色用 `./run.sh pp-shots red`。
+
+判定不靠肉眼：像素占比用"关掉 geomgroup[2] 前后两次渲染差分"客观测量；
+过程图里目标方块的颜色像素也用 `tools/check_color_px.py` 逐张统计过
+（红 477–24785 px、绿 1553–27291 px、蓝 1835–24216 px，全部 >0）。
 
 ## 文件
 
@@ -207,19 +270,19 @@ cd ~/NERO
 | `build_nero.py` | **生成器**：读 URDF + CSV + poses.json，写出 `nero_arm.xml` 与 `nero_table_scene.xml` |
 | `nero_table_scene.xml` | 生成物：桌子 + 三色方块 + 收纳篮 + NERO 机械臂（主场景） |
 | `nero_arm.xml` | 生成物：只有机械臂，基座在原点（便于单独复用） |
-| `solve_poses.py` | 6 残差阻尼最小二乘 IK，写 `poses.json`（9 个关键帧） |
-| `poses.json` | 9 个关键帧的关节角 |
-| `pick_place.py` | **抓取-放置任务**：11 段平滑轨迹，`--check` / `--viewer` / `--shots` |
+| `solve_poses.py` | 6 残差阻尼最小二乘 IK，写 `poses.json`（19 个关键帧 = ready + 3 色 × 6） |
+| `poses.json` | 19 个关键帧的关节角 |
+| `pick_place.py` | **抓取-放置任务**：11 段平滑轨迹，`--cube red\|green\|blue` / `--all` / `--check` / `--viewer` / `--shots` |
 | `validate_nero.py` | 6 段全量校验 |
 | `render_showcase.py` | 成果图（自动取景） |
 | `render_detail.py` | 夹爪抓取特写 |
 | `view_scene.py` | 交互窗口 / `--demo` 演示 / `--check` 自检 |
 | `view.py` | 第一版：只有桌子 + 三色方块 |
 | `check_colors.py` | 校验渲染图里确实有三种不同颜色 |
-| `run.sh` | 一键入口 |
+| `run.sh` | 一键入口（`pick`/`place`/`pp-shots` 都支持 `red\|green\|blue\|all`） |
 | `assets/nero/` | STL 网格 + 原始 CSV |
-| `out/` | 渲染结果（含 `pp_*.png` 过程图） |
-| `tools/` | 诊断脚本（FK 交叉验证、抓取/滑移诊断、篮子筛选等） |
+| `out/` | 渲染结果（含 `pp_<col>_*.png` 三色过程图） |
+| `tools/` | 诊断脚本（FK 交叉验证、抓取/滑移/对齐诊断、篮子筛选等） |
 
 ## 复现
 
@@ -228,7 +291,7 @@ cd ~/NERO
 /home/zhangb/so101_mujoco/.venv/bin/python solve_poses.py   # 重新解位姿 → poses.json
 /home/zhangb/so101_mujoco/.venv/bin/python build_nero.py    # 重新生成 XML
 /home/zhangb/so101_mujoco/.venv/bin/python validate_nero.py # 校验
-/home/zhangb/so101_mujoco/.venv/bin/python pick_place.py --check   # 抓取-放置自检
+/home/zhangb/so101_mujoco/.venv/bin/python pick_place.py --all --check   # 三色抓放自检
 ```
 
 **顺序很重要**：`solve_poses.py` 从现有 XML 读方块/篮子的真实位姿，`build_nero.py`
