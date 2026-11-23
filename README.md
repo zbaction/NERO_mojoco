@@ -384,6 +384,8 @@ hover 刹车 2 次、place_hover 刹车 2 次、末态收敛），不是轨迹�
 
 几何上它是一个真的能看见的物体：三脚架（底座 + 立柱 + 3 根斜撑）+ 云台壳体 + 镜头，
 `dcam_lens` 带 `contype=0`（纯视觉），`<site name="dcam_optical">` 标出光心。
+整机外观见 `out/depth_cam_scene.png`（`python3 render_depthcam_shot.py` 生成，
+自动取景把桌子、机械臂、三脚架三者一起框住）。
 
 ### 用法
 
