@@ -63,19 +63,22 @@ BASKET_SLOTS = {"red": (-0.060, -0.080),
 PLACE_Z = TABLE_Z + BASKET_FLOOR + CUBE_HALF
 PLACE_HOVER_DZ = 0.120      # 放置前悬停高度
 
-# --- 深度相机（RGB-D，固定装在桌面右前方的三脚架上）------------------------
-# 选位依据：tools/probe_cam10.py 的网格搜索 + tools/probe_cam11.py 的渲染复核。
-# 约束是「ready 姿态下 7 个工作点全部入画且不被机械臂挡住」，
-# 候选 247 个可行解里挑遮挡最少、方块像素最大的一个。
-#   * 848x480 @ fovy 58° —— 水平视场 88.8°，接近 RealSense D435 的 87°x58°
-#   * 视野覆盖三块方块 + 篮子四角，边距 176 px
-#   * 19 个关键帧里对方块的总遮挡 3 次（都是夹爪自己压在上方，属正常）
-#   * 方块在图上约 44 px（8 cm 方块 / 0.8 m 距离）
-DEPTH_CAM_POS = (0.57, 0.57, 1.20)      # 世界坐标（米），相机光心
-DEPTH_CAM_LOOKAT = (0.00, 0.20, 0.80)   # 光轴看向工作区中心偏后
-DEPTH_CAM_FOVY = 58.0                   # 垂直视场（度）
-DEPTH_CAM_W, DEPTH_CAM_H = 848, 480     # 必须 <= <global offwidth/offheight>
-DEPTH_CAM_POLE_Z = 1.14                 # 三脚架立柱顶端高度（相机装在其上方）
+# --- 深度相机（RGB-D）：装在腕部（eye-in-hand），随夹爪一起运动 --------------
+# 为什么装腕部：抓取任务里相机要能看到"正要抓的那一块"，固定第三人称相机
+# 一旦机械臂伸过去就自己被挡住；腕部相机的视线永远跟着手走，且手眼外参固定，
+# 标定一次即可把像素坐标换算成末端坐标。
+# 几何：相机装在 gripper_base（法兰外 30 mm、+z 沿工具轴）的 +x 侧支架上，
+# 光心距工具轴 95 mm、沿轴退后 20 mm，光轴朝工具轴侧倾 46°，配 80° 垂直视场。
+# 这组参数由 tools/probe_wrist_sweep*.py 解析扫描选出：hover（工具轴上 0.18 m）
+# 与 grasp/place（工具轴上 0.06 m，方块已被夹住）时，方块 8 个角点全部在画面内，
+# 最差边距 77 px（画面 848x480），且看到的是方块斜面而非纯顶面，便于测 6D 位姿。
+# 型号按 Intel RealSense D405 量级（42x42x23 mm、60 g）。
+WRIST_CAM_XY = (0.095, 0.0)     # 光心在 gripper_base 系里的 (x, y)，掌心外 65 mm 的支架上
+WRIST_CAM_Z = -0.020            # 光心沿工具轴的位置（负 = 朝手腕侧退 20 mm）
+WRIST_CAM_TILT_DEG = 46.0       # 光轴相对工具轴的倾角（朝 -x 侧倾，看向工具轴）
+WRIST_CAM_FOVY = 80.0           # 垂直视场（腕部近距需要大视场）
+WRIST_CAM_W, WRIST_CAM_H = 848, 480   # 必须 <= <global offwidth/offheight>
+WRIST_CAM_MASS = 0.060          # kg，不计入手册的 0.5 kg 夹爪本体
 
 JOINT_LIMIT_DEG = {
     "joint1": (-157.0, 157.0), "joint2": (-102.0, 102.0), "joint3": (-160.0, 160.0),
@@ -223,47 +226,53 @@ def mat_to_quat(R):
     return (w, x, y, z)
 
 
-def depth_camera_xml(ind="    "):
-    """深度相机：一个 <camera> + 一根落地三脚架（视觉体）。
+def wrist_camera_xml(ind="      "):
+    """腕部深度相机（eye-in-hand）：装在 gripper_base 的 +x 侧，跟着手一起动。
 
-    相机单独挂在 worldbody 下（不是挂在夹爪 body 里）——
-    挂在 gripper_base 里会跟着机械臂一起动，渲染出来只剩天空。
+    关键约定（MJCF）：
+      * `<camera>` 写在哪个 body 里，就跟着那个 body 动；
+        所以这条 <camera> **必须**放在 gripper_base 内部（父级变换自动生效）。
+      * MJCF camera 约定：光轴沿 **body 局部 -z**，图像右 = +x，图像上 = +y。
+      * gripper_base 的 +z 沿工具轴向外（工具朝下时即世界向下），
+        所以相机光轴应在 gripper 系里朝 **+z** 并朝 +x 侧倾斜 WRIST_CAM_TILT_DEG：
+            fwd = (sin(tilt), 0, cos(tilt))
+      * 壳体/镜头全部放在光心**后方**（-fwd 方向），否则会挡住自己的视线。
+        镜头贴着光心放，位于 znear=0.01 之内，渲染时被近裁剪面裁掉，不可见。
     """
-    p, right, up, fwd = view_frame(DEPTH_CAM_POS, DEPTH_CAM_LOOKAT)
-    # 相机体系：x=right、y=up、z=-fwd（光轴沿 -z，与 MJCF <camera> 约定一致）
+    tilt = math.radians(WRIST_CAM_TILT_DEG)
+    fwd = np.array([-math.sin(tilt), 0.0, math.cos(tilt)])   # gripper 系里的光轴（朝 -x 侧倾）
+    up_ref = np.array([1.0, 0.0, 0.0])                      # 图像"上"≈夹爪 +x
+    right = np.cross(fwd, up_ref)
+    right /= np.linalg.norm(right)
+    up = np.cross(right, fwd)
+    # MJCF camera 的列向量 = (x=right, y=up, z=-fwd)
     Rb = np.column_stack([right, up, -fwd])
     q = mat_to_quat(Rb)
-    pole_xy = (p[0], p[1])
-    pole_h = DEPTH_CAM_POLE_Z
+    px, py = WRIST_CAM_XY
+    p0 = np.array([px, py, WRIST_CAM_Z])
+
     L = []
-    L.append(camera_xml("depth_cam", DEPTH_CAM_POS, DEPTH_CAM_LOOKAT, DEPTH_CAM_FOVY).strip("\n"))
-    # 三脚架：底盘 + 三根斜腿 + 立柱（全部静态，不参与机械臂动力学）
-    L.append('%s<body name="depth_cam_stand" pos="%s %s 0">'
-             % (ind, f(pole_xy[0], 4), f(pole_xy[1], 4)))
-    L.append('%s  <geom name="dcam_base" type="cylinder" pos="0 0 0.012" size="0.075 0.012" '
-             'material="mat_cam" contype="1" conaffinity="7"/>' % ind)
-    L.append('%s  <geom name="dcam_pole" type="cylinder" pos="0 0 %s" size="0.016 %s" '
-             'material="mat_cam" contype="1" conaffinity="7"/>'
-             % (ind, f(pole_h / 2, 4), f(pole_h / 2, 4)))
-    for k in range(3):
-        a = math.radians(120.0 * k + 30.0)
-        L.append('%s  <geom name="dcam_leg%d" type="capsule" pos="%s %s 0.075" '
-                 'quat="%s" size="0.010 0.085" material="mat_cam" '
-                 'contype="1" conaffinity="7"/>'
-                 % (ind, k, f(0.038 * math.cos(a), 4), f(0.038 * math.sin(a), 4),
-                    vec(rpy_to_quat(0.0, math.radians(72.0), a + math.pi / 2))))
-    L.append('%s</body>' % ind)
-    # 相机壳体：整体在光心"后方"，不遮挡自己的视野
-    L.append('%s<body name="depth_cam_head" pos="%s" quat="%s">'
-             % (ind, vec(p, 4), vec(q, 6)))
-    L.append('%s  <geom name="dcam_body" type="box" pos="0 0 0.038" size="0.045 0.065 0.032" '
-             'material="mat_cam" contype="1" conaffinity="7"/>' % ind)
-    L.append('%s  <geom name="dcam_lens" type="cylinder" pos="0 0 -0.002" quat="%s" '
-             'size="0.018 0.010" material="mat_lens" contype="0" conaffinity="0" group="2"/>'
-             % (ind, vec(rpy_to_quat(math.pi / 2, 0.0, 0.0), 6)))
-    L.append('%s  <site name="dcam_optical" pos="0 0 0" size="0.010" rgba="1 0 1 1"/>' % ind)
-    L.append('%s</body>' % ind)
-    return "\n".join(L)
+    L.append('%s<camera name="wrist_cam" pos="%s" quat="%s" fovy="%s"/>'
+             % (ind, vec(p0, 4), vec(q, 5), f(WRIST_CAM_FOVY, 1)))
+    # 壳体：整体退到光心后方 27 mm（前表面 15 mm 在 znear=0.01 之外，绝不入画）
+    c = p0 - fwd * 0.027
+    L.append('%s<geom name="wrist_cam_body" type="box" pos="%s" quat="%s" '
+             'size="0.020 0.021 0.012" material="mat_cam" '
+             'contype="0" conaffinity="0" group="2"/>'
+             % (ind, vec(c, 4), vec(q, 5)))
+    # 镜头：整个退到光心后方（znear=0.01 之内，渲染时被近裁剪面裁掉），
+    # 也保证任何从光心出发的射线都不会打到自己
+    L.append('%s<geom name="wrist_cam_lens" type="cylinder" pos="%s" quat="%s" '
+             'size="0.009 0.003" material="mat_lens" '
+             'contype="0" conaffinity="0" group="2"/>'
+             % (ind, vec(p0 - fwd * 0.007, 4), vec(q, 5)))
+    # 支架：把相机连到手掌侧面（细杆，纯视觉）
+    b = p0 - fwd * 0.020
+    L.append('%s<geom name="wrist_cam_mount" type="capsule" '
+             'fromto="%.4f %.4f %.4f %.4f %.4f %.4f" size="0.006" '
+             'material="mat_cam" contype="0" conaffinity="0" group="2"/>'
+             % (ind, b[0], b[1], b[2], 0.021, 0.0, 0.010))
+    return L
 
 
 
@@ -416,6 +425,8 @@ def gripper_xml(ind):
                  % (ind, name, f(-sgn * (FINGER_HALF_GAP - PAD_HALF_Y), 4),
                     f(PAD_HALF_Y, 4), ARM_CONTYPE, ARM_CONAFF))
         g.append('%s</body>' % ind)
+    # 腕部深度相机：挂在 gripper_base 内部，跟着夹爪一起运动
+    g.extend(wrist_camera_xml(ind))
     return g
 
 
@@ -697,8 +708,6 @@ def main():
 """ + camera_xml("arm_side", (0.62, -0.60, 1.18), (-0.16, 0.02, 1.00), 42) + """
 """ + camera_xml("top", (0.02, 0.08, 2.10), (0.02, 0.08, 0.80), 52) + """
 
-    <!-- 深度相机（RGB-D）：立柱三脚架 + 848x480 @ fovy58°，固定俯视工作区 -->
-""" + depth_camera_xml("    ") + """
   </worldbody>
 
   <actuator>

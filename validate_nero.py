@@ -15,6 +15,11 @@ import numpy as np
 import mujoco
 from PIL import Image
 
+from depth_cam import DepthCamera
+from depth_view import colormap as depth_colormap
+from depth_view import measure as depth_measure
+from depth_view import write_ply as depth_write_ply
+
 HERE = pathlib.Path(__file__).resolve().parent
 SCENE = HERE / "nero_table_scene.xml"
 OUT = HERE / "out"
@@ -218,57 +223,97 @@ def main():
             check(frac > 0.004, "%s 视角能看到机械臂（>0.4%%）" % cname)
         rend.close()
 
-    # ---------------- 7) 深度相机
-    print("\n[7] 深度相机（RGB-D）")
-    cid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, "depth_cam")
-    check(cid >= 0, "场景里有 depth_cam 相机")
+    # ---------------- 7) 腕部深度相机（eye-in-hand）
+    print("\n[7] 腕部深度相机（RGB-D，eye-in-hand）")
+    cid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_CAMERA, "wrist_cam")
+    check(cid >= 0, "场景里有 wrist_cam 相机")
     if cid >= 0:
-        d.qpos[:] = m.key("ready").qpos
-        mujoco.mj_forward(m, d)
         W, H = 848, 480
         check(W <= m.vis.global_.offwidth and H <= m.vis.global_.offheight,
               "深度图 %dx%d 不超过离屏帧缓冲 %dx%d"
               % (W, H, m.vis.global_.offwidth, m.vis.global_.offheight))
-        rd = mujoco.Renderer(m, H, W)
-        rd.enable_depth_rendering()
-        rd.update_scene(d, camera=cid)
-        dep = rd.render().copy()
-        rd.disable_depth_rendering()
-        rd.update_scene(d, camera=cid)
-        rgb = rd.render().copy()
-        rd.close()
-        Image.fromarray(rgb).save(OUT / "depth_cam_rgb.png")
-        print("       分辨率 %dx%d  fovy %.1f°  光心 [%.2f %.2f %.2f]"
-              % (W, H, m.cam_fovy[cid], *d.cam_xpos[cid]))
-        check(rgb.std() > 12.0, "RGB 图有内容（std=%.1f）" % rgb.std())
-        valid = (dep > 0.05) & (dep < 2.5)
-        check(valid.mean() > 0.30, "有效几何占比 %.1f%%" % (100 * valid.mean()))
-        check(dep[valid].min() > 0.30 and dep[valid].max() < 2.5,
-              "有效深度 %.2f~%.2f m 落在合理范围" % (dep[valid].min(), dep[valid].max()))
 
-        # 用点云拟合桌面高度，验证内参与外参自洽
-        fovy = float(m.cam_fovy[cid])
-        fy = 0.5 * H / math.tan(math.radians(fovy) / 2)
-        uu, vv = np.meshgrid(np.arange(W) + 0.5, np.arange(H) + 0.5)
-        xc = (uu - W / 2) / fy * dep
-        yc = -(vv - H / 2) / fy * dep
+        # 7.1 安装位置：必须是 gripper_base 的子 body（跟着手走）
+        cam_body_id = int(m.cam_bodyid[cid])
+        bname = mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, cam_body_id)
+        gid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "gripper_base")
+        check(bname == "gripper_base", "相机挂在 gripper_base 上（实际 %r）" % bname)
+        mujoco.mj_resetData(m, d)
+        d.qpos[:] = m.key("ready").qpos
+        mujoco.mj_forward(m, d)
+        Rg = np.array(d.xmat[gid]).reshape(3, 3)
+        p_grip = Rg.T @ (np.array(d.cam_xpos[cid]) - np.array(d.xpos[gid]))
+        ax_grip = Rg.T @ (-np.array(d.cam_xmat[cid]).reshape(3, 3)[:, 2])
+        print("       手眼外参（gripper_base 系）：光心 [%.3f %.3f %.3f] m，光轴 [%.3f %.3f %.3f]"
+              % (*p_grip, *ax_grip))
+        check(abs(np.linalg.norm(p_grip) - 0.097) < 0.02,
+              "光心距夹爪原点 %.1f mm（95 mm 量级）" % (1000 * np.linalg.norm(p_grip)))
+        check(ax_grip[2] > 0.55, "光轴在夹爪系里主要朝工具轴方向（z=%.2f）" % ax_grip[2])
+
+        # 7.2 随姿态移动：三个姿态下相机世界坐标必须不同
+        names = ("green_hover", "green_grasp", "green_place")
+        pts = []
+        for nm in names:
+            mujoco.mj_resetData(m, d)
+            d.qpos[:] = m.key(nm).qpos
+            mujoco.mj_forward(m, d)
+            pts.append(np.array(d.cam_xpos[cid]))
+        span = max(float(np.linalg.norm(a - b)) for i2, a in enumerate(pts) for b in pts[i2 + 1:])
+        check(span > 0.15, "相机随夹爪移动（三姿态间最大位移 %.3f m）" % span)
+
+        # 7.3 光轴朝下、能看到目标方块
+        mujoco.mj_resetData(m, d)
+        d.qpos[:] = m.key("green_hover").qpos
+        mujoco.mj_forward(m, d)
         R = np.array(d.cam_xmat[cid]).reshape(3, 3)
-        pw = (np.stack([xc, yc, -dep], -1) @ R.T + np.array(d.cam_xpos[cid]))
-        flat = pw[valid]
-        tab = flat[np.abs(flat[:, 2] - TABLE_Z) < 0.02]
-        check(len(tab) > 2000, "桌面上采到 %d 个点（>2000）" % len(tab))
-        if len(tab):
-            err = abs(float(np.median(tab[:, 2])) - TABLE_Z)
-            print("       桌面高度中位数 %.4f m（真值 %.3f），误差 %.1f mm"
-                  % (np.median(tab[:, 2]), TABLE_Z, 1000 * err))
-            check(err < 0.006, "点云桌面高度误差 < 6 mm")
-
-        # 相机安装几何：必须站在桌面外、不能悬在桌面上方
-        p = np.array(d.cam_xpos[cid])
-        outside = abs(p[0]) > 0.42 or abs(p[1]) > 0.62
-        check(outside and p[2] > 0.95, "相机立柱在桌面外侧、高度 %.2f m" % p[2])
         axis = -R[:, 2]
-        check(axis[2] < -0.30, "光轴朝下（z 分量 %.2f）" % axis[2])
+        check(axis[2] < -0.30, "hover 时光轴朝下（z 分量 %.2f）" % axis[2])
+        p0 = np.array(d.cam_xpos[cid])
+        check(p0[2] > TABLE_Z + 0.05, "相机在桌面上方 %.3f m" % (p0[2] - TABLE_Z))
+        gb = np.array(d.xpos[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "cube_green")])
+        v = gb - p0
+        ang = math.degrees(math.acos(max(-1.0, min(1.0, float(np.dot(axis, v / np.linalg.norm(v)))))))
+        check(ang < 40.0, "绿方块在视野内（离轴 %.1f°）" % ang)
+
+        # 7.4 三色各在自己的 hover 姿态做一次真实深度测量
+        dc = DepthCamera(m, d, cam_name="wrist_cam", width=W, height=H, max_depth=1.0)
+        fx, fy, cx_, cy_ = dc.intrinsics()
+        print("       内参 fx=fy=%.2f cx=%.1f cy=%.1f" % (fx, cx_, cy_))
+        lines = []
+        for col in ("red", "green", "blue"):
+            mujoco.mj_resetData(m, d)
+            d.qpos[:] = m.key("%s_hover" % col).qpos
+            mujoco.mj_forward(m, d)
+            rgb, dep = dc.capture()
+            if col == "green":
+                Image.fromarray(rgb).save(OUT / "depth_rgb.png")
+                Image.fromarray(depth_colormap(dep, lo=0.10, hi=0.90)).save(OUT / "depth_colormap.png")
+                pts, pcols, _ = dc.pointcloud(dep, rgb)
+                depth_write_ply(OUT / "depth_pointcloud.ply", pts, pcols)
+                print("       点云 %d 点 -> out/depth_pointcloud.ply" % len(pts))
+            body = "cube_" + col
+            bb = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, body)
+            gg = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, body + "_geom")
+            c_gt = np.array(d.xpos[bb])
+            half = float(m.geom_size[gg][2])
+            res = depth_measure(dc, rgb, dep, cols=(col,))[col]
+            if not res.get("ok"):
+                check(False, "%s 在 %s_hover 姿态下被深度相机测到（像素 %d）"
+                      % (col, col, res.get("px", 0)))
+                continue
+            c = res["center"]
+            dxy = float(np.hypot(c[0] - c_gt[0], c[1] - c_gt[1]))
+            dz = float(c[2] - (c_gt[2] + half))
+            lines.append((col, res["px"], c, c_gt, dxy, dz))
+            check(dxy < 0.008 and abs(dz) < 0.012,
+                  "%-5s %5d px 测得 [%.3f %.3f %.3f] Δxy=%.1f mm Δz=%.1f mm"
+                  % (col, res["px"], *c, 1000 * dxy, 1000 * dz))
+        dc.close()
+
+        if len(lines) == 3:
+            mean_err = sum(max(l[4], abs(l[5])) for l in lines) / 3.0
+            print("       三色平均误差 %.1f mm（含顶面 z）" % (1000 * mean_err))
+            check(mean_err < 0.006, "三色平均误差 < 6 mm")
 
     print("\n结果: %s" % ("全部通过" if ok else "有失败项"))
     return 0 if ok else 1

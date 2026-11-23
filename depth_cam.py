@@ -2,22 +2,25 @@
 
 用法（在 ~/NERO 下）：
     from depth_cam import DepthCamera
-    dc = DepthCamera(m, d)              # 默认读模型里的 depth_cam
+    dc = DepthCamera(m, d)                     # 默认读模型里的 wrist_cam
+    dc = DepthCamera(m, d, cam_name="wrist_cam", width=848, height=480, max_depth=1.0)
     rgb, depth = dc.capture()
-    pts, col = dc.pointcloud(rgb, depth)   # 世界系点云（已剔除天空/背景）
+    pts, col, mask = dc.pointcloud(depth, rgb)   # 世界系点云（已剔除背景）
+
+注意：`capture()` 返回的是 (rgb, depth)。老版本某些脚本按 pointcloud(rgb, depth)
+顺序传参，内部会自动识别并纠正。
 
 关键事实（tools/probe_depth*.py 实测，MuJoCo 3.17）：
   * mujoco.Renderer(enable_depth_rendering=True) 返回的是**沿相机光轴的 z**
     （不是欧氏距离），单位米，float32。
-  * 天空盒像素的深度 = stat.extent * map.zfar（本场景 2.1*30 = 63.0），
-    地面远处能到 38+。所以背景剔除用"深度 > 上限"而不是"非有限值"——
-    实测所有像素都是有限值。
+  * 背景（天空盒）像素的深度 = stat.extent * map.zfar（本场景 2.1*30 = 63.0），
+    所以背景剔除用"深度 > 上限"而不是"非有限值"——实测所有像素都是有限值。
   * 内参：fy = 0.5*H/tan(fovy/2)，fx = fy（MuJoCo 用正方形像素）。
-    用俯视相机 + 已知桌面 0.8x1.2 m 实测标定：由宽反解 f=493.0、
-    由高反解 f=486.2，与 fy=0.5*480/tan(29°)=432.97（848x480）同量级吻合
-    （不同分辨率下按 H 缩放即可）。
   * 相机坐标：x 右、y 上、z 向后（光轴 -z），像素 (u,v) 以左上角为原点，
     v 向下。反投影：xc=(u-W/2)/fx*z, yc=-(v-H/2)/fy*z, zc=-z。
+  * **`<camera>` 挂在哪个 body 里就跟着哪个 body 运动**：本项目的 wrist_cam
+    挂在 gripper_base 侧面，是 eye-in-hand；`pose()` 每次实时读
+    `d.cam_xpos/d.cam_xmat`，所以不需要任何额外处理就能拿到当前外参。
 """
 from __future__ import annotations
 

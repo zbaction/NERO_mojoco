@@ -117,6 +117,10 @@
                           <geom name="finger_r_vis" type="box" pos="0 0 0.0775" size="0.010 0.007 0.0375" material="nero_white" contype="0" conaffinity="0" group="2"/>
                           <geom name="finger_r_pad" type="box" pos="0 0.008 0.100" size="0.010 0.006 0.015" contype="2" conaffinity="5" condim="4" friction="2.4 0.06 0.0005" solref="0.003 1" solimp="0.98 0.998 0.001"/>
                         </body>
+                        <camera name="wrist_cam" pos="0.095 0 -0.02" quat="0.27629 0.6509 0.6509 0.27629" fovy="80"/>
+                        <geom name="wrist_cam_body" type="box" pos="0.1144 0 -0.0388" quat="0.27629 0.6509 0.6509 0.27629" size="0.020 0.021 0.012" material="mat_cam" contype="0" conaffinity="0" group="2"/>
+                        <geom name="wrist_cam_lens" type="cylinder" pos="0.1 0 -0.0249" quat="0.27629 0.6509 0.6509 0.27629" size="0.009 0.003" material="mat_lens" contype="0" conaffinity="0" group="2"/>
+                        <geom name="wrist_cam_mount" type="capsule" fromto="0.1094 0.0000 -0.0339 0.0210 0.0000 0.0100" size="0.006" material="mat_cam" contype="0" conaffinity="0" group="2"/>
                       </body>
                     </body>
                   </body>
