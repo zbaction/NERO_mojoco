@@ -1,8 +1,10 @@
 # NERO 机械臂 MuJoCo 场景
 
 AgileX **NERO** 七自由度机械臂 + 两指夹爪，装在木桌上，桌面上摆着红/绿/蓝三个方块，
-旁边放着一个木色收纳篮。模型由官方 URDF/质量表逐项转换为 MuJoCo MJCF，
-机械臂可以真的走过去**夹起方块、搬过去、放进篮子里**。
+旁边放着一个木色收纳篮，桌面外侧立着一台 **RGB-D 深度相机**。
+模型由官方 URDF/质量表逐项转换为 MuJoCo MJCF，
+机械臂可以真的走过去**夹起方块、搬过去、放进篮子里**；
+深度相机可以**从点云里测出方块的中心位置**（误差 1.3–1.9 mm）。
 
 | | |
 | --- | --- |
@@ -24,7 +26,9 @@ cd ~/NERO
 ./run.sh place        # 无窗口自检：绿方块落进篮子返回 0
 ./run.sh place blue   # 同上，但搬蓝方块（也支持 red / all）
 ./run.sh place all    # 依次搬三块，并断言先放的不会被后放的挪走
-./run.sh validate     # 6 段全量校验
+./run.sh validate     # 7 段全量校验（含深度相机）
+./run.sh depth        # 深度相机拼版图：RGB / 深度伪彩 / 俯视点云 / 测量数值
+./run.sh depth-check  # 深度相机测量自检，三块方块中心误差 < 6 mm 返回 0
 ./run.sh shots        # 重出成果图到 out/
 ./run.sh pp-shots all # 重出三色各 7 张过程图到 out/
 ./run.sh detail       # 夹爪特写图到 out/
