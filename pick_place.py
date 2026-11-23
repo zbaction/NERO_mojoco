@@ -31,6 +31,7 @@ OUT = HERE / "out"
 OUT.mkdir(exist_ok=True)
 
 ARM = ["joint%d" % i for i in range(1, 8)]
+GRIP_JOINTS = ["grip_l", "grip_r"]
 GRIP_OPEN, GRIP_CLOSE = 0.050, 0.0
 
 COLORS = ("red", "green", "blue")
@@ -67,9 +68,21 @@ def load():
 
 
 def reset(m, d, qad):
-    d.qpos[:] = m.key("ready").qpos
+    """把机械臂复位到 ready —— **只动机械臂，不动方块**。
+
+    早期版本写的是 d.qpos[:] = m.key("ready").qpos，这会把所有 freejoint
+    一起重置。后果：`--all` 依次搬三块时，搬第二块开头的 reset 会把
+    第一块已经从篮子里"搬回"桌面（实测 green 从 [-0.04 0.42 0.788]
+    变回 [0.18 0 0.78]）。所以这里只写 7 个臂关节 + 两根手指，
+    三个方块的 freejoint 位置保持原样。
+    """
+    k = m.key("ready").qpos
+    gq = [m.jnt_qposadr[mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, n)]
+          for n in GRIP_JOINTS]
+    d.qpos[qad] = k[qad]
+    d.qpos[gq] = k[gq]
     d.qvel[:] = 0
-    d.ctrl[:7] = [m.key("ready").qpos[a] for a in qad]
+    d.ctrl[:7] = k[qad]
     d.ctrl[7] = d.ctrl[8] = GRIP_OPEN
     mujoco.mj_forward(m, d)
 
@@ -133,17 +146,36 @@ def basket_box(m, d):
     return (cx, cy), floor_top, inner
 
 
-def cube_in_basket(m, d, cube):
-    """判定方块是否稳稳落在篮子内腔里。"""
+def slot_xy(m, d, col):
+    """某个颜色的放置格位（场景里的 site）。"""
+    sid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, "slot_%s" % col)
+    if sid < 0:
+        raise RuntimeError("场景里没有 slot_%s，请先跑 build_nero.py" % col)
+    return float(d.site_xpos[sid][0]), float(d.site_xpos[sid][1])
+
+
+def cube_in_basket(m, d, cube, col=None):
+    """判定方块是否稳稳落在**它自己的格位**上。
+
+    篮子放大到 280 mm 后，三个颜色各占一个格位（间距 120 mm）。
+    如果还按"离篮心 < 内半宽"判，红/绿块落在自己格位里也会被判失败，
+    所以这里改成跟自己的 slot 比。
+    """
     (bx, by), floor_top, inner = basket_box(m, d)
     b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, cube)
     g = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, cube + "_geom")
     p = d.xpos[b]
     half = float(m.geom_size[g][2])
-    ok_xy = abs(p[0] - bx) < inner - half and abs(p[1] - by) < inner - half
+    # 格位中心（没传颜色就从 cube 名字里推）
+    if col is None:
+        col = cube.replace("cube_", "")
+    tx, ty = slot_xy(m, d, col)
+    ok_xy = abs(p[0] - tx) < 0.020 and abs(p[1] - ty) < 0.020
     ok_z = abs(p[2] - (floor_top + half)) < 0.012
+    # 还要真的在内腔里（防止 site 写错把格位放到墙外）
+    in_box = abs(p[0] - bx) < inner - half and abs(p[1] - by) < inner - half
     upright = d.xmat[b].reshape(3, 3)[2, 2] > 0.97
-    return ok_xy and ok_z and upright, p, (bx, by), floor_top, inner
+    return (ok_xy and ok_z and in_box and upright), p, (tx, ty), floor_top, inner
 
 
 def run(m, d, qad, col="green", viewer=None, verbose=True):
@@ -152,9 +184,10 @@ def run(m, d, qad, col="green", viewer=None, verbose=True):
     bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, cube)
     p0 = d.xpos[bid].copy()
     (bx, by), floor_top, inner = basket_box(m, d)
+    tx, ty = slot_xy(m, d, col)
     if verbose:
-        print("任务：把%s [%.3f %.3f %.3f] 搬进篮子 [%.3f %.3f]（内腔 %.0f mm）"
-              % (LABEL[col], *p0, bx, by, 2000 * inner))
+        print("任务：把%s [%.3f %.3f %.3f] 搬进篮子 [%.3f %.3f]，格位 [%.3f %.3f]（内腔 %.0f mm）"
+              % (LABEL[col], *p0, bx, by, tx, ty, 2000 * inner))
         print()
         print("%-6s %-26s %-26s %s" % ("阶段", "方块位置", "指尖中点", "说明"))
     for i, (key, grip, secs, note) in enumerate(phases_for(col)):
@@ -168,9 +201,9 @@ def run(m, d, qad, col="green", viewer=None, verbose=True):
     if verbose:
         print()
         print("最终：%s [%.3f %.3f %.3f]" % (LABEL[col], *p))
-        print("      篮子中心 (%.3f, %.3f)  底板顶面 z=%.3f  内半宽 %.3f"
+        print("      自己的格位 (%.3f, %.3f)  底板顶面 z=%.3f  内半宽 %.3f"
               % (bc[0], bc[1], ft, inner))
-        print("      偏离中心 %.1f mm，底面高差 %.1f mm"
+        print("      偏离格位 %.1f mm（限 20.0），底面高差 %.1f mm（限 12.0）"
               % (1000 * math.hypot(p[0] - bc[0], p[1] - bc[1]),
                  1000 * abs(p[2] - (ft + 0.040))))
         print("结果：%s" % ("成功，%s在篮子内" % LABEL[col] if ok else "失败"))
@@ -196,14 +229,20 @@ def shots(m, d, qad, col):
     reset(m, d, qad)
     cube = CUBE_OF[col]
     bid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, cube)
-    # 图名带颜色前缀，否则三种颜色会互相覆盖
-    marks = {"%s_grasp" % col: ("pp_%s_1_grasped" % col, (0.08, 0.02, 0.92), 0.95, 55, -14),
-             "%s_lift" % col: ("pp_%s_2_lifted" % col, (0.04, 0.06, 1.00), 1.05, 55, -14),
-             "%s_transit" % col: ("pp_%s_3_transit" % col, (-0.00, 0.22, 1.00), 1.10, 55, -16),
-             "%s_place_hover" % col: ("pp_%s_4_above_basket" % col, (-0.02, 0.32, 0.95), 0.95, 62, -18),
-             # 篮子侧壁 90 mm 高、方块 80 mm 高 —— 低机位会被完全遮住，
-             # 必须用俯视（el=-52）+ 近距离才能看到方块躺在篮底
-             "%s_place" % col: ("pp_%s_5_placed" % col, (-0.04, 0.42, 0.80), 0.62, 62, -52)}
+    (bx, by), ft, inner = basket_box(m, d)
+    tx, ty = slot_xy(m, d, col)
+    # 机位按篮子真实位置算（篮子放大后又挪了位置，不能再写死坐标）
+    marks = {
+        "%s_grasp" % col: ("pp_%s_1_grasped" % col, (0.08, 0.02, 0.92), 0.95, 55, -14),
+        "%s_lift" % col: ("pp_%s_2_lifted" % col, (0.04, 0.06, 1.00), 1.05, 55, -14),
+        "%s_transit" % col: ("pp_%s_3_transit" % col,
+                             ((0.08 + bx) / 2, (0.02 + by) / 2, 1.00), 1.10, 55, -16),
+        "%s_place_hover" % col: ("pp_%s_4_above_basket" % col,
+                                 (tx, ty, ft + 0.20), 0.95, 62, -18),
+        # 篮子侧壁 90 mm 高、方块 80 mm 高 —— 低机位会被完全遮住，
+        # 必须用俯视（el=-52）+ 近距离才能看到方块躺在篮底
+        "%s_place" % col: ("pp_%s_5_placed" % col, (tx, ty, ft + 0.05), 0.62, 62, -52),
+    }
     shot = set()
     for i, (key, grip, secs, note) in enumerate(phases_for(col)):
         move(m, d, qad, key, grip, secs)
@@ -214,14 +253,14 @@ def shots(m, d, qad, col):
             print("  写出 out/%s.png   %s z=%.4f"
                   % (nm, LABEL[col], d.xpos[bid][2]))
     # 收尾全景 + 篮子俯视特写
-    shoot(m, d, "pp_%s_6_done" % col, (-0.06, 0.20, 0.88), 1.15, 60, -30)
-    shoot(m, d, "pp_%s_7_basket_top" % col, (-0.04, 0.42, 0.80), 0.50, 62, -68)
+    shoot(m, d, "pp_%s_6_done" % col, (bx + 0.10, by - 0.22, 0.88), 1.15, 60, -30)
+    shoot(m, d, "pp_%s_7_basket_top" % col, (bx, by, ft + 0.05), 0.85, 62, -68)
     print("  写出 out/pp_%s_6_done.png / pp_%s_7_basket_top.png" % (col, col))
-    ok, p, bc, ft, inner = cube_in_basket(m, d, cube)
+    ok, p, sc, ft, inner = cube_in_basket(m, d, cube)
     print()
     print("最终：%s [%.3f %.3f %.3f]" % (LABEL[col], *p))
-    print("      偏离篮心 %.1f mm  底面高差 %.1f mm"
-          % (1000 * math.hypot(p[0] - bc[0], p[1] - bc[1]),
+    print("      偏离格位 (%.3f, %.3f) %.1f mm  底面高差 %.1f mm"
+          % (sc[0], sc[1], 1000 * math.hypot(p[0] - sc[0], p[1] - sc[1]),
              1000 * abs(p[2] - (ft + 0.040))))
     print("结果：%s" % ("成功，%s在篮子内" % LABEL[col] if ok else "失败"))
     return ok
@@ -265,16 +304,42 @@ def main():
     if a.check:
         cols = list(COLORS) if a.all else [a.cube]
         allok = True
+        placed = []
+        worst = 0.0
         for col in cols:
+            before = {}
+            for c in placed:
+                b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, CUBE_OF[c])
+                before[c] = d.xpos[b].copy()
             run(m, d, qad, col, verbose=False)
-            ok, p, bc, ft, inner = cube_in_basket(m, d, CUBE_OF[col])
-            dxy = math.hypot(p[0] - bc[0], p[1] - bc[1])
+            ok, p, sc, ft, inner = cube_in_basket(m, d, CUBE_OF[col])
+            dxy = math.hypot(p[0] - sc[0], p[1] - sc[1])
             dz = abs(p[2] - (ft + 0.040))
             allok = allok and ok
-            print("%-6s %s 落点 [%.3f %.3f %.3f]  偏离篮心 %.1f mm（限 %.1f）"
+            print("%-5s %s 落点 [%.3f %.3f %.3f]  偏离格位 [%.3f %.3f] %.1f mm（限 20.0）"
                   "  高差 %.1f mm（限 12.0）  -> %s"
-                  % (col, LABEL[col], *p, 1000 * dxy, 1000 * (inner - 0.040),
+                  % (col, LABEL[col], *p, sc[0], sc[1], 1000 * dxy,
                      1000 * dz, "PASS" if ok else "FAIL"))
+            # 关键：此前已放好的方块必须原地不动（这是 `--all` 最初的真实 bug）
+            for c, p0 in before.items():
+                b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, CUBE_OF[c])
+                dn = 1000 * math.hypot(d.xpos[b][0] - p0[0], d.xpos[b][1] - p0[1])
+                worst = max(worst, dn)
+                if dn > 5.0:
+                    print("      !! 已放好的%s被挪动了 %.1f mm" % (LABEL[c], dn))
+                    allok = False
+            placed.append(col)
+        if len(cols) > 1:
+            print("\n搬运过程中已放置方块的最大水平扰动 %.2f mm（限 5.0）"
+                  % worst)
+            # 最终再整体校验一次：三块必须**同时**都在各自格位上
+            print("同时检查三块是否都在篮内：")
+            for col in COLORS:
+                ok, p, sc, ft, inner = cube_in_basket(m, d, CUBE_OF[col])
+                print("  %-5s [%.3f %.3f %.3f]  偏离格位 %.1f mm  -> %s"
+                      % (col, *p, 1000 * math.hypot(p[0] - sc[0], p[1] - sc[1]),
+                         "PASS" if ok else "FAIL"))
+                allok = allok and ok
         print("总结果：%s" % ("PASS" if allok else "FAIL"))
         return 0 if allok else 1
 

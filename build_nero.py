@@ -47,12 +47,18 @@ CUBE_HALF = 0.040           # 8 cm 方块（夹爪行程 100 mm，留 20 mm 接�
 CUBE_MASS = 0.30            # kg（塑料件量级；不是实心 1 kg）
 
 # --- 篮子（放置目标，固定在桌面上，开口朝上）--------------------------------
-# 内腔 180 mm 见方：8 cm 方块放进去后四周各留 50 mm，夹爪张开时也不会蹭到壁。
-BASKET_XY = (-0.04, 0.42)   # 篮子中心（桌面坐标，台面 x∈[-0.4,0.4] y∈[-0.6,0.6]）
-BASKET_INNER_HALF = 0.070   # 内腔半宽（内腔 140 mm 见方）
+# 280 mm 见方的大筐：三个 80 mm 方块要能同时留在里面，并排需要 240 mm。
+# 内腔 280 mm，三个格位按三角形排布（间距 120 mm），互相不碰。
+BASKET_XY = (-0.16, 0.42)   # 篮子中心（桌面坐标，台面 x∈[-0.4,0.4] y∈[-0.6,0.6]）
+BASKET_INNER_HALF = 0.140   # 内腔半宽（内腔 280 mm 见方）
 BASKET_WALL = 0.008         # 侧壁厚
 BASKET_FLOOR = 0.008        # 底板厚
 BASKET_HEIGHT = 0.090       # 侧壁高（从底板上表面算起）
+# 三个放置格位（相对篮子中心的偏移）。三角形排布，两两间距 120 mm：
+# 方块 80 mm + 夹爪每侧多出 10 mm，120 mm 间距留 40 mm 空档，不会互相干扰。
+BASKET_SLOTS = {"red": (-0.060, -0.080),
+                "green": (0.060, -0.080),
+                "blue": (0.0, 0.080)}
 # 放置时方块中心的高度：底板顶面 + 半个方块
 PLACE_Z = TABLE_Z + BASKET_FLOOR + CUBE_HALF
 PLACE_HOVER_DZ = 0.120      # 放置前悬停高度
@@ -329,8 +335,9 @@ def joint_xml(j, ind):
 def basket_xml(ind="    "):
     """桌面上的收纳篮（固定件）：底板 + 四壁，开口朝上。
 
-    内腔 140 mm 见方、深 90 mm —— 8 cm 方块放进去四周各留 30 mm，
-    夹爪下降到腔体里张开/退出都不会蹭壁。
+    内腔 280 mm 见方、深 90 mm —— 三个 8 cm 方块要能**同时**留在里面
+    （并排至少需要 240 mm），所以比第一版的 140 mm 大了一圈。
+    篮内用三个 site 标出红/绿/蓝各自的放置格位（三角形排布，间距 120 mm）。
     """
     ih = BASKET_INNER_HALF
     oh = ih + BASKET_WALL                       # 外半宽
@@ -361,6 +368,12 @@ def basket_xml(ind="    "):
                  % (ind, "p" if sy > 0 else "m", geo,
                     f(sy * (ih + BASKET_WALL / 2), 4), f(cz, 4),
                     f(oh, 3), f(BASKET_WALL / 2, 4), f(hz, 4)))
+    # 三个放置格位用 site 标记，作为唯一数据源：
+    # build_nero.py / solve_poses.py / pick_place.py 都从这里读，
+    # 不再各自维护一份 BASKET_SLOTS 常量（三处容易改漏）。
+    for name, (sx, sy) in BASKET_SLOTS.items():
+        L.append('%s  <site name="slot_%s" pos="%s %s %s" size="0.012" rgba="0 0 0 0"/>'
+                 % (ind, name, f(sx, 4), f(sy, 4), f(t, 4)))
     L.append('%s</body>' % ind)
     return "\n".join(L)
 

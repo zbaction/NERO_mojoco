@@ -195,9 +195,10 @@ def cube_pose(name):
 
 
 def basket_frame():
-    """从场景里读篮子的 (中心 xy, 放置点 z)。
+    """从场景里读篮子的 (中心 xy, 底板顶面 z)。
 
-    放置点 z = 底板顶面 + 半个方块 + 2 mm 余量（避免方块与底板初始穿模）。
+    三个放置格位由场景里的 `slot_red` / `slot_green` / `slot_blue` 三个
+    site 定义（build_nero.py 生成），这里只读，不再维护第二份常量。
     """
     mujoco.mj_resetData(m, d)
     mujoco.mj_forward(m, d)
@@ -208,6 +209,14 @@ def basket_frame():
     cx, cy = float(d.xpos[bb][0]), float(d.xpos[bb][1])
     floor_top = float(d.geom_xpos[fg][2]) + float(m.geom_size[fg][2])
     return (cx, cy), floor_top
+
+
+def slot_xy(col):
+    """读取某个颜色的放置格位世界坐标（篮子 site）。"""
+    sid = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, "slot_%s" % col)
+    if sid < 0:
+        raise RuntimeError("场景里没有 slot_%s，请先跑 build_nero.py" % col)
+    return float(d.site_xpos[sid][0]), float(d.site_xpos[sid][1])
 
 
 CUBES = ("cube_red", "cube_green", "cube_blue")
@@ -236,10 +245,14 @@ def solve_task(cube, q_ref=None, verbose=True):
     # 所以目标偏航必须是 -yaw_c。
     yaw_tgt = -yaw_c
     (bx, by), floor_top = basket_frame()
-    place = np.array([bx, by, floor_top + 0.040 + 0.002])
+    # 每个颜色有自己的格位（场景里的 slot_<col> site），
+    # 这样三块方块可以同时留在篮子里互不干扰。
+    col = CUBE_COLOR[cube]
+    px, py = slot_xy(col)
+    place = np.array([px, py, floor_top + 0.040 + 0.002])
     place_hover = place + np.array([0.0, 0.0, 0.120])
-    # 中转点取"方块 → 篮子"路径的中点，抬到篮子口以上，避免扫到侧壁
-    transit = np.array([(c[0] + bx) / 2.0, (c[1] + by) / 2.0, floor_top + 0.230])
+    # 中转点取"方块 → 自己格位"路径的中点，抬到篮子口以上，避免扫到侧壁
+    transit = np.array([(c[0] + px) / 2.0, (c[1] + py) / 2.0, floor_top + 0.230])
     JOB = [
         # 名字, 指尖中点目标, 夹持面目标偏航（注意是 -yaw_c，见上面符号说明）
         ("hover",       np.array([c[0], c[1], c[2] + 0.120]), yaw_tgt),
