@@ -18,11 +18,13 @@ cd ~/NERO
 ./run.sh              # 交互窗口（WSLg 显示到 Windows 桌面）
 ./run.sh demo         # 交互窗口，自动演示：张开→下降→夹紧→提起
 ./run.sh pick         # 交互窗口，完整演示：夹起绿方块 → 搬进篮子 → 松手退出
+./run.sh pick red     # 同上，但搬红方块（也支持 green / blue / all）
 ./run.sh check        # 无窗口自检，抓取成功返回 0
-./run.sh place        # 无窗口自检：方块落进篮子返回 0
+./run.sh place        # 无窗口自检：绿方块落进篮子返回 0
+./run.sh place blue   # 同上，但搬蓝方块（也支持 red / all）
 ./run.sh validate     # 6 段全量校验
 ./run.sh shots        # 重出成果图到 out/
-./run.sh pp-shots     # 重出抓取-放置的 7 张过程图到 out/
+./run.sh pp-shots all # 重出三色各 7 张过程图到 out/
 ./run.sh detail       # 夹爪特写图到 out/
 ./run.sh desk         # 只看第一版的桌子 + 三色方块
 ```

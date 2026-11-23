@@ -43,10 +43,10 @@ def drive(m, d, qad, key, grip, secs, viewer=None):
 
 
 def demo(m, d, qad, viewer=None):
-    drive(m, d, qad, "hover", GRIP_OPEN, 2.0, viewer)
-    drive(m, d, qad, "grasp", GRIP_OPEN, 2.5, viewer)
-    drive(m, d, qad, "grasp", GRIP_CLOSE, 2.0, viewer)
-    drive(m, d, qad, "hover", GRIP_CLOSE, 2.5, viewer)
+    drive(m, d, qad, "green_hover", GRIP_OPEN, 2.0, viewer)
+    drive(m, d, qad, "green_grasp", GRIP_OPEN, 2.5, viewer)
+    drive(m, d, qad, "green_grasp", GRIP_CLOSE, 2.0, viewer)
+    drive(m, d, qad, "green_hover", GRIP_CLOSE, 2.5, viewer)
 
 
 def arm_bounds(m, d):
