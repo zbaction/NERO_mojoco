@@ -191,18 +191,44 @@ def cube_pose(name):
     return d.xpos[bid].copy(), yaw
 
 
+def basket_frame():
+    """从场景里读篮子的 (中心 xy, 放置点 z)。
+
+    放置点 z = 底板顶面 + 半个方块 + 2 mm 余量（避免方块与底板初始穿模）。
+    """
+    mujoco.mj_resetData(m, d)
+    mujoco.mj_forward(m, d)
+    bb = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "basket")
+    fg = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "basket_floor")
+    if bb < 0 or fg < 0:
+        return None
+    cx, cy = float(d.xpos[bb][0]), float(d.xpos[bb][1])
+    floor_top = float(d.geom_xpos[fg][2]) + float(m.geom_size[fg][2])
+    return (cx, cy), floor_top
+
+
 if __name__ == "__main__":
     # 直接从场景读三个方块的真实位姿（位置 + 绕 z 偏航），
     # 这样夹爪的夹持面永远对齐方块自己的两个侧面。
     cubes = {n: cube_pose(n) for n in ("cube_red", "cube_green", "cube_blue")}
     cg, yg = cubes["cube_green"]
+    (bx, by), floor_top = basket_frame()
+    place = np.array([bx, by, floor_top + 0.040 + 0.002])
+    place_hover = place + np.array([0.0, 0.0, 0.120])
+    transit = np.array([(cg[0] + bx) / 2, (cg[1] + by) / 2, floor_top + 0.230])
+    print("篮子中心 (%.3f, %.3f)  底板顶面 z=%.3f" % (bx, by, floor_top))
+    print("放置点      %s" % np.round(place, 3))
     JOBS = [
         # 名字, 指尖中点目标, 夹持面目标偏航
-        ("ready",      np.array([cg[0], cg[1], cg[2] + 0.295]), 0.0),
-        ("hover",      np.array([cg[0], cg[1], cg[2] + 0.120]), yg),
-        ("grasp",      np.array([cg[0], cg[1], cg[2]]), yg),
-        ("grasp_red",  np.array(cubes["cube_red"][0]), cubes["cube_red"][1]),
-        ("grasp_blue", np.array(cubes["cube_blue"][0]), cubes["cube_blue"][1]),
+        ("ready",       np.array([cg[0], cg[1], cg[2] + 0.295]), 0.0),
+        ("hover",       np.array([cg[0], cg[1], cg[2] + 0.120]), yg),
+        ("grasp",       np.array([cg[0], cg[1], cg[2]]), yg),
+        ("grasp_red",   np.array(cubes["cube_red"][0]), cubes["cube_red"][1]),
+        ("grasp_blue",  np.array(cubes["cube_blue"][0]), cubes["cube_blue"][1]),
+        ("lift",        np.array([cg[0], cg[1], cg[2] + 0.150]), yg),
+        ("transit",     transit, yg),
+        ("place_hover", place_hover, yg),
+        ("place",       place, yg),
     ]
     out = {}
     q_ref = None

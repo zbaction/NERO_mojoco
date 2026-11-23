@@ -46,6 +46,17 @@ ARM_MOUNT = (-0.30, 0.0, TABLE_Z)
 CUBE_HALF = 0.040           # 8 cm 方块（夹爪行程 100 mm，留 20 mm 接近余量）
 CUBE_MASS = 0.30            # kg（塑料件量级；不是实心 1 kg）
 
+# --- 篮子（放置目标，固定在桌面上，开口朝上）--------------------------------
+# 内腔 180 mm 见方：8 cm 方块放进去后四周各留 50 mm，夹爪张开时也不会蹭到壁。
+BASKET_XY = (-0.04, 0.42)   # 篮子中心（桌面坐标，台面 x∈[-0.4,0.4] y∈[-0.6,0.6]）
+BASKET_INNER_HALF = 0.070   # 内腔半宽（内腔 140 mm 见方）
+BASKET_WALL = 0.008         # 侧壁厚
+BASKET_FLOOR = 0.008        # 底板厚
+BASKET_HEIGHT = 0.090       # 侧壁高（从底板上表面算起）
+# 放置时方块中心的高度：底板顶面 + 半个方块
+PLACE_Z = TABLE_Z + BASKET_FLOOR + CUBE_HALF
+PLACE_HOVER_DZ = 0.120      # 放置前悬停高度
+
 JOINT_LIMIT_DEG = {
     "joint1": (-157.0, 157.0), "joint2": (-102.0, 102.0), "joint3": (-160.0, 160.0),
     "joint4": (-60.0, 125.0), "joint5": (-160.0, 160.0), "joint6": (-44.0, 57.0),
@@ -315,6 +326,45 @@ def joint_xml(j, ind):
             % (ind, f(-JOINT_TORQUE_MAX), f(JOINT_TORQUE_MAX))]
 
 
+def basket_xml(ind="    "):
+    """桌面上的收纳篮（固定件）：底板 + 四壁，开口朝上。
+
+    内腔 140 mm 见方、深 90 mm —— 8 cm 方块放进去四周各留 30 mm，
+    夹爪下降到腔体里张开/退出都不会蹭壁。
+    """
+    ih = BASKET_INNER_HALF
+    oh = ih + BASKET_WALL                       # 外半宽
+    t = BASKET_FLOOR                            # 底板厚
+    cz = t + BASKET_HEIGHT / 2.0                # 侧壁中心高
+    hz = BASKET_HEIGHT / 2.0                    # 侧壁半高
+    x, y = BASKET_XY
+    ct, ca = 1, 7                               # 与桌子同组：会挡臂、也挡方块
+    geo = ('type="box" material="mat_basket" contype="%d" conaffinity="%d" '
+           'condim="3" friction="0.8 0.02 0.002" solref="0.004 1" '
+           'solimp="0.95 0.99 0.001"' % (ct, ca))
+    L = []
+    L.append('%s<body name="basket" pos="%s %s %s">'
+             % (ind, f(x, 3), f(y, 3), f(TABLE_Z, 3)))
+    L.append('%s  <geom name="basket_floor" %s pos="0 0 %s" size="%s %s %s"/>'
+             % (ind, geo, f(t / 2, 4), f(oh, 3), f(oh, 3), f(t / 2, 4)))
+    # 沿 y 方向的两面长壁（在 ±x 处），长度取内腔，避免与另外两面重叠
+    for sx in (-1, 1):
+        L.append('%s  <geom name="basket_wall_x%s" %s pos="%s 0 %s" '
+                 'size="%s %s %s"/>'
+                 % (ind, "p" if sx > 0 else "m", geo,
+                    f(sx * (ih + BASKET_WALL / 2), 4), f(cz, 4),
+                    f(BASKET_WALL / 2, 4), f(ih, 3), f(hz, 4)))
+    # 沿 x 方向的两面短壁（在 ±y 处），长度取外半宽
+    for sy in (-1, 1):
+        L.append('%s  <geom name="basket_wall_y%s" %s pos="0 %s %s" '
+                 'size="%s %s %s"/>'
+                 % (ind, "p" if sy > 0 else "m", geo,
+                    f(sy * (ih + BASKET_WALL / 2), 4), f(cz, 4),
+                    f(oh, 3), f(BASKET_WALL / 2, 4), f(hz, 4)))
+    L.append('%s</body>' % ind)
+    return "\n".join(L)
+
+
 def body_xml(link, parent_joint, joints, ind, depth=0):
     """输出 link 及其下游子树。
 
@@ -415,7 +465,8 @@ def main():
     stat_scene = ('  <statistic center="0.00 0.00 0.80" extent="2.10"/>')
 
     poses = load_poses()
-    kf_names = [k for k in ("ready", "hover", "grasp", "grasp_red", "grasp_blue")
+    kf_names = [k for k in ("ready", "hover", "grasp", "grasp_red", "grasp_blue",
+                            "lift", "transit", "place_hover", "place")
                 if k in poses]
     # 每个关键帧都写全 qpos（7 关节 + 2 指）。所有位姿指尖都保持张开（GRIP_OPEN，
     # 开度 100 mm），闭合由仿真脚本把 ctrl 拉到 GRIP_CLOSE 完成。
@@ -487,6 +538,7 @@ def main():
     <material name="mat_red"   rgba="0.86 0.13 0.13 1" specular="0.3" shininess="0.6"/>
     <material name="mat_green" rgba="0.12 0.68 0.26 1" specular="0.3" shininess="0.6"/>
     <material name="mat_blue"  rgba="0.16 0.34 0.86 1" specular="0.3" shininess="0.6"/>
+    <material name="mat_basket" rgba="0.55 0.40 0.22 1" specular="0.15" shininess="0.2"/>
 """ + mats + "\n" + meshes + """
   </asset>
 
@@ -513,8 +565,11 @@ def main():
 """ + mount_body + """
     </body>
 
-    <!-- 三个方块：边长 10cm，摆在台面上 -->
+    <!-- 三个方块：边长 8 cm，摆在台面上 -->
 """ + cube_xml + """
+
+    <!-- 收纳篮：放置任务的目标容器 -->
+""" + basket_xml() + """
 
 """ + camera_xml("overview", (1.05, -1.20, 1.42), (-0.10, 0.05, 0.92), 40) + """
 """ + camera_xml("arm_front", (-0.28, -0.92, 1.10), (-0.10, 0.02, 1.00), 42) + """
