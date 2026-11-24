@@ -63,6 +63,11 @@ BASKET_SLOTS = {"red": (-0.060, -0.080),
 PLACE_Z = TABLE_Z + BASKET_FLOOR + CUBE_HALF
 PLACE_HOVER_DZ = 0.120      # 放置前悬停高度
 
+# --- 桌面场景里的"叠叠塔"：三个新方块叠在一起，原三块不动 -------------------
+TOWER_XY = (0.33, 0.52)       # 底层方块中心（桌面东北角，避开原三块/篮子/臂路径）
+TOWER_COLORS = ("mat_red", "mat_green", "mat_blue")   # 从下到上
+TOWER_NAME = "tower_stack"
+
 # --- 深度相机（RGB-D）：装在腕部（eye-in-hand），随夹爪一起运动 --------------
 # 为什么装腕部：抓取任务里相机要能看到"正要抓的那一块"，固定第三人称相机
 # 一旦机械臂伸过去就自己被挡住；腕部相机的视线永远跟着手走，且手眼外参固定，
@@ -650,10 +655,28 @@ def main():
                       ct=OBJ_CONTYPE, ca=OBJ_CONAFF)
         for n, (x, y), yaw, m in cubes)
 
+    # 叠叠塔：三个新方块叠在一起（单个 body + freejoint，三层固定不会散架）。
+    # 每层 geom 相对 body 原点抬高 0 / 0.08 / 0.16 m，颜色从下到上红/绿/蓝。
+    tower_layers = []
+    for i, mat in enumerate(TOWER_COLORS):
+        tower_layers.append(
+            """      <geom name="tower_{c}_geom" type="box" pos="0 0 {dz}" size="{s} {s} {s}"
+            material="{m}" mass="{mass}" friction="1.0 0.02 0.002"
+            contype="{ct}" conaffinity="{ca}"/>""".format(
+                c=("red", "green", "blue")[i],
+                dz=f(2.0 * CUBE_HALF * i, 3),
+                s=f(CUBE_HALF, 3), m=mat, mass=f(CUBE_MASS, 3),
+                ct=OBJ_CONTYPE, ca=OBJ_CONAFF))
+    tower_xml = """    <body name="{n}" pos="{x} {y} {z}">
+      <freejoint name="{n}_free"/>
+""".format(n=TOWER_NAME, x=f(TOWER_XY[0], 3), y=f(TOWER_XY[1], 3),
+           z=f(TABLE_Z + CUBE_HALF, 3)) + "\n".join(tower_layers) + """
+    </body>"""
+
     mount_body = "\n".join(body_xml("base_link", None, joints, "      "))
 
     SCENE_OUT.write_text("""<mujoco model="nero_desk_scene">
-  <!-- 桌面场景：AgileX NERO 七自由度机械臂 + 桌面三个彩色方块
+  <!-- 桌面场景：AgileX NERO 七自由度机械臂 + 桌面三个彩色方块 + 东北角叠叠塔
        由 build_nero.py 生成；机械臂基座固定在桌面上表面 (z=0.74) -->
 """ + common_head + "\n" + stat_scene + """
 
@@ -699,6 +722,9 @@ def main():
 
     <!-- 三个方块：边长 8 cm，摆在台面上 -->
 """ + cube_xml + """
+
+    <!-- 叠叠塔：三个新方块叠在一起（东北角，原三块不动） -->
+""" + tower_xml + """
 
     <!-- 收纳篮：放置任务的目标容器 -->
 """ + basket_xml() + """

@@ -1,5 +1,5 @@
 <mujoco model="nero_desk_scene">
-  <!-- 桌面场景：AgileX NERO 七自由度机械臂 + 桌面三个彩色方块
+  <!-- 桌面场景：AgileX NERO 七自由度机械臂 + 桌面三个彩色方块 + 东北角叠叠塔
        由 build_nero.py 生成；机械臂基座固定在桌面上表面 (z=0.74) -->
   <compiler angle="radian" autolimits="true"/>
   <option timestep="0.002" integrator="implicitfast" cone="elliptic" impratio="10"
@@ -178,6 +178,20 @@
       <freejoint name="cube_blue_free"/>
       <geom name="cube_blue_geom" type="box" size="0.04 0.04 0.04" material="mat_blue" mass="0.3"
             friction="1.0 0.02 0.002" contype="4" conaffinity="7"/>
+    </body>
+
+    <!-- 叠叠塔：三个新方块叠在一起（东北角，原三块不动） -->
+    <body name="tower_stack" pos="0.33 0.52 0.78">
+      <freejoint name="tower_stack_free"/>
+      <geom name="tower_red_geom" type="box" pos="0 0 0" size="0.04 0.04 0.04"
+            material="mat_red" mass="0.3" friction="1.0 0.02 0.002"
+            contype="4" conaffinity="7"/>
+      <geom name="tower_green_geom" type="box" pos="0 0 0.08" size="0.04 0.04 0.04"
+            material="mat_green" mass="0.3" friction="1.0 0.02 0.002"
+            contype="4" conaffinity="7"/>
+      <geom name="tower_blue_geom" type="box" pos="0 0 0.16" size="0.04 0.04 0.04"
+            material="mat_blue" mass="0.3" friction="1.0 0.02 0.002"
+            contype="4" conaffinity="7"/>
     </body>
 
     <!-- 收纳篮：放置任务的目标容器 -->

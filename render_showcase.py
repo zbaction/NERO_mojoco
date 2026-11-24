@@ -40,10 +40,10 @@ def grab_and_lift(m, d, qad):
     d.ctrl[:7] = [m.key("ready").qpos[x] for x in qad]
     d.ctrl[7] = d.ctrl[8] = GRIP_OPEN
     mujoco.mj_forward(m, d)
-    drive("hover", GRIP_OPEN, 2.0)
-    drive("grasp", GRIP_OPEN, 2.5)
-    drive("grasp", GRIP_CLOSE, 2.0)
-    drive("hover", GRIP_CLOSE, 2.5)
+    drive("green_hover", GRIP_OPEN, 2.0)
+    drive("green_grasp", GRIP_OPEN, 2.5)
+    drive("green_grasp", GRIP_CLOSE, 2.0)
+    drive("green_hover", GRIP_CLOSE, 2.5)
 
 
 def arm_mask(r, d, cam):
