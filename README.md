@@ -477,6 +477,55 @@ blue   blue_hover  15572 px  测得 [0.152  0.262 0.820]  真值 [0.150  0.260 0
 - **`geom_rbound` 是包围球半径**（box 的对角线），拿它当立方体角点会把包围盒放大 √3 倍，
   自动取景算出的 `dist` 偏大近一倍 → 乘 0.6 近似贴合真实外形。
 
+## 实时监控窗口（`live_monitor.py`）
+
+`./run.sh live` 打开一个单窗口实时监控：左边是 3D 场景（自由相机，可拖拽旋转 /
+滚轮缩放 / 右键复位），右边上下叠着腕部相机的 **RGB 画面**和**深度伪彩**，
+下方是状态栏和 7 个操作按钮（抓红 / 抓绿 / 抓蓝 / 全部搬完 / 回待命 / 暂停 / 停止）。
+按钮点下去就能在监控窗口里实时看机械臂执行抓取-放置全程。
+
+```bash
+./run.sh live                 # 只开窗口
+./run.sh live green           # 开窗口后自动搬绿方块（red / blue / all）
+./run.sh live --smoke 8 --save out/live_ui.png   # 跑 8 s 退出并存一张界面合成图
+```
+
+实现要点：
+
+- **为什么不能用 `mujoco.viewer`**：`launch_passive` 只能显示 3D 主视图，没有任何
+  API 能把第二台相机嵌进同一窗口。所以窗口自己用 `mujoco.Renderer` 渲染
+  free 相机 + `wrist_cam` RGB + `wrist_cam` 深度，贴进同一个 Tk 窗口。
+- **复用 `pick_place` 的 `viewer` 接口**：`Monitor` 类实现 `sync()` 与
+  `is_running()`，直接当 `viewer=` 传进 `pick_place`，全部轨迹代码零改动。
+  `sync()` 里 raise `Abort` 实现"停止"。
+- **按钮回调只记请求，真正任务在 `loop()` 里跑**：回调在 `root.update()` 内部触发，
+  若直接执行任务会形成 Tk 重入。
+- **关掉阴影**：`<global shadowsize="4096">` 下 848×480 单帧 225 ms（4.4 fps），
+  设为 0 后 43 ms（23 fps）。阴影 pass 要额外重绘 21 万个三角面，是唯一大瓶颈，
+  且与分辨率几乎无关（320×180 与 848×480 都是 ~150 ms）。实时窗口关阴影，
+  静态成果图（`render_showcase.py` 等）保留阴影。
+- **每帧固定渲染开销 ~35–45 ms/次**，与分辨率基本无关（500×306 ≈ 1000×620）。
+  所以每帧只渲 3D + RGB，深度图隔帧更新：整帧约 100–130 ms → **8–10 fps**。
+  腕部深度伪彩图用 `depth_view.colormap`，背景涂深灰。
+
+实测（WSL2 + WSLg，D3D12 / Intel Iris Xe）：
+
+| 项 | 耗时 |
+| --- | --- |
+| 3D 渲染 1000×620 | 35–43 ms |
+| 腕部 RGB 500×306 | 33–43 ms |
+| 腕部深度 500×306 | 27 ms |
+| 深度→伪彩 | ~2 ms |
+| 整帧（深度隔帧） | 100–130 ms → 8–10 fps |
+
+两个显示坑：
+
+- `tk.Label(width=1000, height=620)` 的单位是**字符**不是像素，会把窗口撑到
+  12030×10650 px。正确做法是 Label 不设 width/height，贴图后按
+  `winfo_reqwidth/reqheight` 用 `root.geometry()` 定死尺寸。
+- WSLg 下截 Tk 窗口（`PrintWindow`）要乘 `dpi/96`（本机 144 → 1.5×），
+  否则只截到左上角。见 `tools/shot_window.ps1`。
+
 ## 验证
 
 `./run.sh validate` 跑 7 段检查，当前全部 PASS：
@@ -534,6 +583,7 @@ blue   blue_hover  15572 px  测得 [0.152  0.262 0.820]  真值 [0.150  0.260 0
 | `solve_poses.py` | 6 残差阻尼最小二乘 IK，写 `poses.json`（19 个关键帧 = ready + 3 色 × 6） |
 | `poses.json` | 19 个关键帧的关节角 |
 | `pick_place.py` | **抓取-放置任务**：3 条连续 C2 轨迹 + 2 次夹爪动作，实时播放；`--cube red\|green\|blue` / `--all` / `--check` / `--viewer` / `--shots` |
+| `live_monitor.py` | **实时监控窗口**：3D 场景 + 腕部 RGB/深度同框，按钮直接驱动抓取任务 |
 | `validate_nero.py` | 7 段全量校验（结构/限位/运动学/稳定性/抓取/渲染/深度相机） |
 | `depth_cam.py` | 腕部深度相机封装：深度渲染、反投影、点云、投影 |
 | `depth_view.py` | 腕部深度测量与自检（`--check` / `--all-poses`，出 PLY 点云） |
@@ -544,7 +594,7 @@ blue   blue_hover  15572 px  测得 [0.152  0.262 0.820]  真值 [0.150  0.260 0
 | `view_scene.py` | 交互窗口 / `--demo` 演示 / `--check` 自检 |
 | `view.py` | 第一版：只有桌子 + 三色方块 |
 | `check_colors.py` | 校验渲染图里确实有三种不同颜色 |
-| `run.sh` | 一键入口（`pick`/`place`/`pp-shots` 都支持 `red\|green\|blue\|all`；`depth` 出深度相机图） |
+| `run.sh` | 一键入口（`pick`/`place`/`pp-shots` 都支持 `red\|green\|blue\|all`；`depth` 出深度相机图；`live` 实时监控窗口） |
 | `assets/nero/` | STL 网格 + 原始 CSV |
 | `out/` | 渲染结果（含 `pp_<col>_*.png` 三色过程图） |
 | `tools/` | 诊断脚本（FK 交叉验证、抓取/滑移/对齐诊断、篮子筛选等） |
